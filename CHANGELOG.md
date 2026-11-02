@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.1
+
+Setup is quieter, cancellable, and takes either engine spelling.
+
+**Added**
+
+* `WehniX setup --engines universal,steam` — a comma or space separated list,
+  alongside the existing repeatable `--engine`.
+
+**Fixed**
+
+* Download progress was drawn once per megabyte, so a 1 GB engine produced
+  thousands of lines. It is now rate limited to about one line per percent and
+  per quarter second, and a stage change or the final `100%` is always shown.
+  `ProgressThrottle` is pure logic with an injectable clock and is tested.
+* `Ctrl+C` during setup or `engines install` used to surface as a traceback and
+  could leave a `.part` download behind. It now prints a cancellation line,
+  returns exit code `1`, deletes the partial file and the extraction staging
+  folder, and leaves `setup_complete` at `false`.
+
 ## 0.3.0
 
 First-run setup, with pinned and verified engine downloads.

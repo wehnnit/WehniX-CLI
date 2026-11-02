@@ -34,6 +34,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,6 +56,64 @@ from .state import (
 Progress = Callable[[str, int | None], None]
 
 ELEVEN_ELEVEN = "11.11"
+
+
+class ProgressThrottle:
+    """Rate-limit progress lines so a 1 GB download prints ~100, not thousands.
+
+    A line is only drawn when the percentage has moved by at least ``step``
+    *and* at least ``interval`` seconds have passed, so a fast link does not
+    flood the terminal and a slow one still shows movement. Percent ``None`` is
+    a stage change ("Extracting…") and always goes through; percent ``100``
+    always goes through so the last line is never swallowed.
+
+    The clock is injectable so the cadence is tested rather than eyeballed.
+    """
+
+    def __init__(
+        self,
+        interval: float = 0.25,
+        step: int = 1,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self.interval = interval
+        self.step = max(1, int(step))
+        self.clock = clock or time.monotonic
+        self._emitted_at: float | None = None
+        self._emitted_percent: int | None = None
+
+    def should_emit(self, percent: int | None) -> bool:
+        now = self.clock()
+        last_at = self._emitted_at
+        last_percent = self._emitted_percent
+        emit = (
+            last_at is None
+            or percent is None
+            or percent >= 100
+            or (
+                last_percent is not None
+                and percent - last_percent >= self.step
+                and (now - last_at) >= self.interval
+            )
+        )
+        if emit:
+            self._emitted_at = now
+            if percent is not None:
+                self._emitted_percent = percent
+        return emit
+
+
+def throttled(progress: Progress | None, **kwargs) -> Progress:
+    """Wrap ``progress`` with a :class:`ProgressThrottle`, safe when it is None."""
+    if progress is None:
+        return lambda message, percent=None: None
+    gate = ProgressThrottle(**kwargs)
+
+    def report(message: str, percent: int | None = None) -> None:
+        if gate.should_emit(percent):
+            progress(message, percent)
+
+    return report
 
 # Copied from wehnix_app.py :: REMOTE_ENGINE_DOWNLOADS. Both values are the
 # asset digests reported by the WX-Wine releases API. Do not edit one without
@@ -332,17 +391,17 @@ def download_archive(
     part = destination.with_suffix(destination.suffix + ".part")
     hasher = hashlib.sha256()
     request = urllib.request.Request(url, headers={"User-Agent": "WehniX-CLI"})
+    report = throttled(progress)
     try:
         with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
             total = int(response.headers.get("Content-Length") or 0)
             written = 0
-            if progress is not None:
-                progress(
-                    f"Downloading {config['label']} ({total / 1024**2:.0f} MB)…"
-                    if total
-                    else f"Downloading {config['label']}…",
-                    None,
-                )
+            report(
+                f"Downloading {config['label']} ({total / 1024**2:.0f} MB)…"
+                if total
+                else f"Downloading {config['label']}…",
+                None,
+            )
             with part.open("wb") as handle:
                 while True:
                     if cancel is not None and cancel():
@@ -355,8 +414,8 @@ def download_archive(
                         raise SetupError("The engine download is larger than any known archive.")
                     hasher.update(chunk)
                     handle.write(chunk)
-                    if progress is not None and total:
-                        progress(
+                    if total:
+                        report(
                             f"Downloading {config['label']}… {written / 1024**2:.0f} / "
                             f"{total / 1024**2:.0f} MB",
                             min(99, int((written / total) * 100)),
@@ -369,6 +428,11 @@ def download_archive(
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError) as exc:
         part.unlink(missing_ok=True)
         raise SetupError(f"Could not download {config['label']}: {exc}") from exc
+    except BaseException:
+        # Ctrl+C and anything else: a half file must never survive as a
+        # candidate archive that a later run would try to reuse.
+        part.unlink(missing_ok=True)
+        raise
 
     digest = hasher.hexdigest()
     if digest != expected:
@@ -385,8 +449,7 @@ def download_archive(
         )
     part.replace(destination)
     clear_quarantine(destination)
-    if progress is not None:
-        progress(f"Verified {destination.name}", 100)
+    report(f"Verified {destination.name}", 100)
     return {"path": destination, "sha256": digest, "bytes": destination.stat().st_size}
 
 

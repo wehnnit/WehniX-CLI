@@ -340,6 +340,101 @@ def test_read_commands_never_download(state_dir, no_app, monkeypatch, capsys):
     assert "Engine 11.17 Universal" in capsys.readouterr().out
 
 
+def test_progress_throttle_draws_a_readable_number_of_lines():
+    now = [0.0]
+    gate = engine_setup.ProgressThrottle(interval=0.25, step=1, clock=lambda: now[0])
+    assert gate.should_emit(0) is True  # the first line always shows
+    now[0] = 0.05
+    assert gate.should_emit(1) is False  # percent moved, but too soon to repaint
+    now[0] = 0.30
+    assert gate.should_emit(1) is True
+    now[0] = 0.31
+    assert gate.should_emit(5) is False  # a jump still waits out the interval
+    now[0] = 0.60
+    assert gate.should_emit(5) is True
+    assert gate.should_emit(100) is True  # the final percent is never swallowed
+    assert gate.should_emit(None) is True  # a stage change always shows
+
+    # A 1000-chunk download must not produce 1000 console lines.
+    clock = [0.0]
+    lines: list[int | None] = []
+    report = engine_setup.throttled(
+        lambda message, percent=None: lines.append(percent),
+        interval=0.25,
+        step=1,
+        clock=lambda: clock[0],
+    )
+    for chunk in range(1000):
+        clock[0] += 0.01
+        report(f"chunk {chunk}", min(99, chunk // 10))
+    # Ten simulated seconds at one line per quarter second, not 1000 lines.
+    assert 1 <= len(lines) <= 45
+    engine_setup.throttled(None)("no reporter", 50)  # must not raise
+
+
+def test_setup_accepts_a_comma_separated_engine_list(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(tmp_path / "WehniX"))
+    monkeypatch.setattr("wehnix_cli.cli.app_is_running", lambda: False)
+    seen: dict[str, list[str]] = {}
+
+    def fake_setup(root, versions, progress=None, cancel=None):
+        seen["versions"] = list(versions)
+        return {"success": True, "engines": [], "root": str(root)}
+
+    monkeypatch.setattr(engine_setup, "setup", fake_setup)
+    assert cli.main(["setup", "--engines", "universal,steam", "--json"]) == 0
+    assert seen["versions"] == [
+        engine_setup.contract.UNIVERSAL,
+        engine_setup.contract.STEAM,
+    ]
+
+    assert cli.main(["setup", "--engines", "steam 11.11", "--json"]) == 0
+    assert seen["versions"] == [engine_setup.contract.STEAM, "11.11"]
+
+    assert cli.main(["setup", "--engines", "10.0", "--json"]) == 1
+    assert "not an engine" in capsys.readouterr().out
+
+
+class _InterruptedResponse:
+    """A download that is cut off by Ctrl+C part way through."""
+
+    headers = {"Content-Length": str(8 * 1024 * 1024)}
+
+    def __init__(self):
+        self._sent = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self, size=-1):
+        if self._sent < 2:
+            self._sent += 1
+            return b"x" * 4096
+        raise KeyboardInterrupt
+
+
+def test_ctrl_c_leaves_no_partial_archive_and_no_setup_complete(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(tmp_path / "WehniX"))
+    monkeypatch.setattr("wehnix_cli.cli.app_is_running", lambda: False)
+    monkeypatch.setattr(
+        engine_setup.urllib.request, "urlopen", lambda *args, **kwargs: _InterruptedResponse()
+    )
+
+    assert cli.main(["setup", "--engine", "11.11"]) == 1
+    assert "cancelled" in capsys.readouterr().out.lower()
+
+    root = tmp_path / "WehniX"
+    downloads = root / "Engine" / ".downloads"
+    assert not list(downloads.glob("*.part"))
+    assert not engine_setup.installed_zip(root, engine_setup.ELEVEN_ELEVEN).exists()
+    assert json.loads((root / "config.json").read_text())["setup_complete"] is False
+
+
 def test_install_aliases_and_unknown_version(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(tmp_path / "WehniX"))
     monkeypatch.setattr("wehnix_cli.cli.app_is_running", lambda: False)

@@ -207,11 +207,25 @@ def _refuse_when_app_running(force: bool) -> bool:
     return True
 
 
+def _engine_selection(args) -> list[str]:
+    """Both spellings of the engine option: ``--engine steam`` and
+    ``--engines universal,steam`` (which also accepts spaces)."""
+    values: list[str] = []
+    for group in list(getattr(args, "engines", None) or []):
+        for part in str(group).replace(" ", ",").split(","):
+            if part.strip():
+                values.append(part.strip())
+    for item in getattr(args, "engine", None) or []:
+        if str(item).strip():
+            values.append(str(item).strip())
+    return values
+
+
 def cmd_setup(args) -> int:
     root = state_root()
     if _refuse_when_app_running(getattr(args, "force", False)):
         return EXIT_ERROR
-    versions = list(getattr(args, "engine", None) or [])
+    versions = _engine_selection(args)
     try:
         versions = [engine_setup.resolve_version(value) for value in versions] or [
             engine_setup.contract.UNIVERSAL
@@ -227,6 +241,12 @@ def cmd_setup(args) -> int:
         result = engine_setup.setup(
             root, versions, progress=None if args.json else _setup_progress
         )
+    except KeyboardInterrupt:
+        _console().print(
+            "\n[yellow]Setup cancelled.[/] No engine was installed and "
+            "setup_complete was not written."
+        )
+        return EXIT_ERROR
     except engine_setup.SetupError as exc:
         _console().print(f"[red]{exc}[/]")
         return EXIT_ERROR
@@ -265,6 +285,9 @@ def _cmd_engines_install(args) -> int:
         result = engine_setup.install(
             version, root, progress=None if args.json else _setup_progress
         )
+    except KeyboardInterrupt:
+        _console().print("\n[yellow]Install cancelled.[/] No engine was installed.")
+        return EXIT_ERROR
     except engine_setup.SetupError as exc:
         _console().print(f"[red]{exc}[/]")
         return EXIT_ERROR
@@ -666,6 +689,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="VERSION",
         help="universal (default), steam or 11.11; repeatable",
+    )
+    setup.add_argument(
+        "--engines",
+        action="append",
+        metavar="LIST",
+        help="comma-separated engines, e.g. universal,steam",
     )
     setup.add_argument("--json", action="store_true")
     setup.add_argument("--force", action="store_true", help="run even while WehniX is open")

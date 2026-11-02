@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.3.0-7c5cff?style=flat-square"></a>
+  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.3.1-7c5cff?style=flat-square"></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-000000?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d9cff?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3ddc97?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-108%20passing-3ddc97?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-111%20passing-3ddc97?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-ffb454?style=flat-square">
 </p>
 
@@ -70,7 +70,8 @@ WehniX logs -n 50      # the tail of wehniX.log
 
 ```sh
 WehniX setup                       # Universal: the recommended engine
-WehniX setup --engine steam        # Universal and the Steam engine
+WehniX setup --engines universal,steam   # add the Steam engine explicitly
+WehniX setup --engine steam        # the same, one engine per flag
 WehniX engines install 11.11       # an archive for bottles you already have
 WehniX engines doctor              # per-engine path, size and health
 ```

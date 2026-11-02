@@ -112,7 +112,8 @@ writes. Epic titles are the desktop app's domain and are not guessed at.
 ### `WehniX setup`
 
 ```
-WehniX setup [--engine universal|steam|11.11 ...] [--force] [--json]
+WehniX setup [--engines universal,steam] [--engine universal|steam|11.11 ...]
+             [--force] [--json]
 ```
 
 First-run setup. Creates `WehniX/`, `Engine/`, `bottles/`, `cli/` and `logs/`,
@@ -121,6 +122,10 @@ the requested engine (Universal by default). `setup_complete` is set to `true`
 only after the engine has passed its required-file and zip checks; a failed or
 cancelled run leaves it `false` and installs no engine.
 
+Engines are opt-in beyond Universal because both 11.17 archives together are
+about 1.8 GiB. `--engines universal,steam` (comma or space separated) and the
+repeatable `--engine steam` mean the same thing.
+
 The archive is downloaded with `urllib` over HTTPS from the pinned WX-Wine
 release asset, hashed while it streams, and promoted from `.part` only when the
 SHA-256 matches. A verified archive already in `Engine/.downloads/` is reused.
@@ -128,7 +133,11 @@ The superseded Universal build (`e8e77b…05f5`) is refused even when its own
 checksum matches, because it is missing `scripts/wx-session.sh`.
 
 Setup refuses to run while WehniX.app is open unless `--force` is passed, and
-checks free disk space (about 3 GB per 11.17 engine) before starting.
+checks free disk space (about 3 GB per 11.17 engine) before starting. Progress
+is throttled to about one line per percent and per quarter second, so a 1 GB
+download fills a few lines instead of thousands. `Ctrl+C` before the final
+config write cancels cleanly: the partial `.part` file and the extraction
+staging folder are deleted and `setup_complete` stays `false`.
 
 ```json
 {
