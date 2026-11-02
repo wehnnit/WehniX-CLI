@@ -196,3 +196,79 @@ Prints `WehniX CLI <version> · Apache-2.0 · WEHNIT`.
 4. Archive members and symlink targets are validated before extraction; a
    traversal attempt aborts the whole operation.
 5. No command downloads anything, signs in anywhere, or starts Wine.
+
+## Uninstall
+
+Quit WehniX and WehniX CLI first. Both sets are safe to repeat: a path that is
+already gone is reported, not treated as an error. The launchers answer to
+`WehniX`, `wehniX`, `wehnix` and `Wehnix`.
+
+### Set 1 — remove the CLI, keep your bottles
+
+```sh
+python3 -m pip uninstall -y wehnix-cli 2>/dev/null || true
+rm -rf "${HOME}/.local/share/wehniX-cli"
+rm -f \
+  "${HOME}/.local/bin/wehniX-cli" \
+  "${HOME}/.local/bin/wehniX" \
+  "${HOME}/.local/bin/WehniX" \
+  "${HOME}/.local/bin/wehnix" \
+  "${HOME}/.local/bin/Wehnix"
+rm -rf "${HOME}/Library/Application Support/WehniX/cli"
+rm -rf "${HOME}/.cache/wehniX-cli-demo"
+```
+
+`~/Library/Application Support/WehniX` stays, including `config.json`,
+`bottles.json`, `bottles/`, `Engine/` and `logs/`. `logs/` is app-owned, so it
+is not listed as CLI cleanup here.
+
+Optional PATH cleanup, only if `~/.local/bin` is not used for anything else:
+
+```sh
+sed -i.bak '/export PATH="\$HOME\/\.local\/bin:\$PATH"/d' \
+  "${HOME}/.zshrc" "${HOME}/.bashrc" 2>/dev/null || true
+rm -f "${HOME}/.zshrc.bak" "${HOME}/.bashrc.bak"
+```
+
+Never delete `~/.local/bin` itself — other tools live there.
+
+```sh
+command -v WehniX || true
+```
+
+### Set 2 — remove the CLI and all WehniX data
+
+Deletes every bottle, engine archive, game inside a bottle, setting, save and
+log. Back up first; there is no undo. The app bundle in `/Applications` is not
+removed.
+
+```sh
+python3 -m pip uninstall -y wehnix-cli 2>/dev/null || true
+rm -rf "${HOME}/.local/share/wehniX-cli"
+rm -f \
+  "${HOME}/.local/bin/wehniX-cli" \
+  "${HOME}/.local/bin/wehniX" \
+  "${HOME}/.local/bin/WehniX" \
+  "${HOME}/.local/bin/wehnix" \
+  "${HOME}/.local/bin/Wehnix"
+rm -rf "${HOME}/.cache/wehniX-cli-demo"
+rm -rf "${HOME}/Library/Application Support/WehniX"
+```
+
+PATH cleanup is the same optional block as set 1.
+
+### Script
+
+```sh
+scripts/uninstall.sh                # CLI only
+scripts/uninstall.sh --all-data     # CLI and app data (asks first)
+scripts/uninstall.sh --pip          # also pip uninstall wehnix-cli
+scripts/uninstall.sh --clean-path   # also drop the installer's PATH line
+scripts/uninstall.sh --yes          # skip the prompt (non-interactive)
+```
+
+Exit codes: `0` removed and verified, `1` refused (no `--yes` outside a TTY) or
+something could not be removed, `64` bad option or `HOME` unset.
+
+A custom `--state-dir` folder, or wherever `WEHNIX_CLI_STATE_DIR` pointed, is
+not touched by the script; delete it yourself if you used one.

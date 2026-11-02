@@ -7,7 +7,7 @@
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-000000?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d9cff?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3ddc97?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-59%20passing-3ddc97?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-65%20passing-3ddc97?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-ffb454?style=flat-square">
 </p>
 
@@ -168,6 +168,107 @@ Every ported rule names its source, for example:
 def bottle_types_for_engine(version): ...
 ```
 
+## Uninstall
+
+Quit WehniX and WehniX CLI first, then pick one of the two paths below. Both
+are safe to run twice: a path that is already gone is reported, not treated as
+an error.
+
+The launchers are `WehniX`, `wehniX`, `wehnix` and `Wehnix`. On a
+case-insensitive volume they are one file, but every spelling is removed so the
+result is the same on any disk.
+
+### Keep your bottles (remove the CLI only)
+
+`~/Library/Application Support/WehniX` — bottles, engine archives, settings,
+saves and logs — is left exactly as it is, so reinstalling finds everything.
+
+```sh
+# 1. Optional: remove a pip, pipx or editable install
+python3 -m pip uninstall -y wehnix-cli 2>/dev/null || true
+
+# 2. The installer's private runtime
+rm -rf "${HOME}/.local/share/wehniX-cli"
+
+# 3. Every launcher spelling
+rm -f \
+  "${HOME}/.local/bin/wehniX-cli" \
+  "${HOME}/.local/bin/wehniX" \
+  "${HOME}/.local/bin/WehniX" \
+  "${HOME}/.local/bin/wehnix" \
+  "${HOME}/.local/bin/Wehnix"
+
+# 4. The CLI's own folder inside the app data (preferences only)
+rm -rf "${HOME}/Library/Application Support/WehniX/cli"
+
+# 5. Screenshot and demo files, if the script ever ran on this Mac
+rm -rf "${HOME}/.cache/wehniX-cli-demo"
+```
+
+`.../WehniX/logs` is deliberately not in that list: the desktop app writes there
+too, so it belongs to the app, not the CLI.
+
+Remove the PATH line the installer added only if you do not use `~/.local/bin`
+for anything else:
+
+```sh
+sed -i.bak '/export PATH="\$HOME\/\.local\/bin:\$PATH"/d' \
+  "${HOME}/.zshrc" "${HOME}/.bashrc" 2>/dev/null || true
+rm -f "${HOME}/.zshrc.bak" "${HOME}/.bashrc.bak"
+```
+
+Keep `~/.local/bin` itself. Deleting the folder to get rid of five launchers
+takes every other tool installed there with it.
+
+Open a new terminal, then confirm the command is gone:
+
+```sh
+command -v WehniX || true
+WehniX --version || true
+```
+
+### Remove everything (the CLI and all WehniX data)
+
+**This deletes `~/Library/Application Support/WehniX`: every bottle, every
+installed engine, every game inside a bottle, every setting, save and log.
+There is no undo.** Copy anything you want to keep somewhere else first.
+
+```sh
+python3 -m pip uninstall -y wehnix-cli 2>/dev/null || true
+rm -rf "${HOME}/.local/share/wehniX-cli"
+rm -f \
+  "${HOME}/.local/bin/wehniX-cli" \
+  "${HOME}/.local/bin/wehniX" \
+  "${HOME}/.local/bin/WehniX" \
+  "${HOME}/.local/bin/wehnix" \
+  "${HOME}/.local/bin/Wehnix"
+rm -rf "${HOME}/.cache/wehniX-cli-demo"
+rm -rf "${HOME}/Library/Application Support/WehniX"
+```
+
+The PATH line is optional, exactly as above. This does **not** remove
+`/Applications/WehniX.app`; drag it to the Trash yourself if you want it gone.
+It does not touch the website folder or a developer checkout either.
+
+### Or run the script
+
+```sh
+scripts/uninstall.sh                 # CLI only, keeps your bottles
+scripts/uninstall.sh --all-data      # CLI and every bottle; asks first
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--all-data` | also delete `~/Library/Application Support/WehniX` |
+| `--yes` | skip the confirmation prompt (needed outside a terminal) |
+| `--pip` | also run `python3 -m pip uninstall -y wehnix-cli` |
+| `--clean-path` | remove the installer's `~/.local/bin` line from your shell rc |
+
+It prints every path it touches, verifies the result, and exits `1` if anything
+is left behind. Custom `--state-dir` folders, and anything you pointed
+`WEHNIX_CLI_STATE_DIR` at, are yours: the script never guesses at them, so
+remove those yourself if you used one.
+
 ## Development
 
 ```sh
@@ -175,7 +276,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                                  # 59 tests, no network, no real data
+pytest                                  # 65 tests, no network, no real data
 WEHNIX_CLI_STATE_DIR="$PWD/tests/fixtures/state" WehniX
 python scripts/make_screenshot.py       # regenerate docs/cli.svg
 ```

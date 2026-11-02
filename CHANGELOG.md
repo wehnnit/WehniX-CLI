@@ -33,6 +33,8 @@ First public release.
 
 * `list`, `show`, `games`, `engines`, `doctor`, `open`, `logs`, `settings`,
   `storage`, `init`, `version`, with `--json` and stable exit codes (0, 1, 2).
+* `scripts/uninstall.sh` removes the CLI and keeps your bottles by default;
+  `--all-data` also removes the shared data folder after a confirmation.
 * The app-running guard ignores false positives from its own command line.
 
 **Fixes against the previous prototype**
