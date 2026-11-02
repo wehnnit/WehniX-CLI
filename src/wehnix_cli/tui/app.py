@@ -261,8 +261,9 @@ class EngineView(Vertical):
         if not engines:
             empty.update(
                 f"[{MUTED}]No engines installed.[/]\n\n"
-                f"Open WehniX and run setup, or drop an engine archive into "
-                f"[{MUTED}]{root / 'Engine'}[/]."
+                f"Run [{ACCENT}]WehniX setup[/] to install the Universal engine, or open "
+                f"WehniX and finish its setup. An archive dropped into "
+                f"[{MUTED}]{root / 'Engine'}[/] is picked up too."
             )
 
 

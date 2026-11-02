@@ -23,6 +23,30 @@ screenshot script use.
 `--json` output is stable enough to pipe into `jq`. Nothing is ever printed to
 stdout except the requested output; warnings go to stderr or the TUI toast.
 
+## Network use
+
+Read-only commands (`list`, `show`, `games`, `engines`, `doctor`, `open`,
+`logs`, `settings`, `storage`) and the interface never use the network.
+`setup` and `engines install` do, and only against the pinned assets below,
+over HTTPS, with a SHA-256 check before anything is extracted. There is no flag
+for a custom URL, no mirror list, and no redirect to another host.
+
+| Engine | Asset | SHA-256 |
+| --- | --- | --- |
+| `11.17-universal` | `WX-wine-11.17-Universal.tar.xz` | `04a6772387007814ef9d3f054a896ee46dfb96f5a625b140e46a7310a9164384` |
+| `11.17-steam` | `WX-wine-11.17.tar.xz` | `6aa499f98f5fec0eaa3eb6dad0d9665b04abeea82006b19714d50bf5ab3394ee` |
+| `11.11` | `WehniX-Engine-11.11-macos.tar.xz` | `a8ca3ee4ecaa648f1b288f2700ce6551fed43f7eb06c4cb379a7c851d7f8aa5c` |
+
+The superseded Universal build (`e8e77bd412f90482a4df72c89e7af1d4686c2c15aaf936a20133e43b0c6305f5`)
+is rejected on completeness: it is missing `scripts/wx-session.sh`.
+
+Archives are validated before extraction (absolute paths, `..`, escaping
+symlinks, member count and expansion ratio), after extraction (required engine
+files) and after repacking to `Engine/<zip name>` (required zip members and a
+100 MB floor). Extraction happens in `Engine/.staging-<version>` and is removed
+on every path, success or failure. A download is written to `.part` and only
+renamed once its digest matches.
+
 ## Subcommands
 
 ### `WehniX list` (alias `bottles`)
@@ -85,15 +109,62 @@ WehniX games [--json]
 Steam games inside the bottles, read from the `appmanifest_*.acf` files Steam
 writes. Epic titles are the desktop app's domain and are not guessed at.
 
+### `WehniX setup`
+
+```
+WehniX setup [--engine universal|steam|11.11 ...] [--force] [--json]
+```
+
+First-run setup. Creates `WehniX/`, `Engine/`, `bottles/`, `cli/` and `logs/`,
+writes a desktop-shaped `config.json` and an empty `bottles.json`, then installs
+the requested engine (Universal by default). `setup_complete` is set to `true`
+only after the engine has passed its required-file and zip checks; a failed or
+cancelled run leaves it `false` and installs no engine.
+
+The archive is downloaded with `urllib` over HTTPS from the pinned WX-Wine
+release asset, hashed while it streams, and promoted from `.part` only when the
+SHA-256 matches. A verified archive already in `Engine/.downloads/` is reused.
+The superseded Universal build (`e8e77b…05f5`) is refused even when its own
+checksum matches, because it is missing `scripts/wx-session.sh`.
+
+Setup refuses to run while WehniX.app is open unless `--force` is passed, and
+checks free disk space (about 3 GB per 11.17 engine) before starting.
+
+```json
+{
+  "success": true,
+  "root": "~/Library/Application Support/WehniX",
+  "setup_complete": true,
+  "engines": [
+    {
+      "version": "11.17-universal",
+      "engine_zip": "…/Engine/WehniX Engine 11.17 Universal.zip",
+      "bytes": 1048576000,
+      "reused": false,
+      "sha256": "04a6772387007814ef9d3f054a896ee46dfb96f5a625b140e46a7310a9164384"
+    }
+  ]
+}
+```
+
 ### `WehniX engines`
 
 ```
-WehniX engines [--json]
+WehniX engines [list] [--json]
+WehniX engines install universal|steam|11.11 [--force] [--json]
+WehniX engines doctor [--json]
 ```
 
-Installed engine archives with their identity, size, health and whether they can
-create a bottle. An archive under 100 MB is reported as "suspiciously small"
-rather than called broken.
+`list` shows installed archives with their identity, size, health and whether
+they can create a bottle. An archive under 100 MB is reported as "suspiciously
+small" rather than called broken.
+
+`install` runs the same pinned, checksum-verified path as setup for one engine,
+without touching `config.json`.
+
+`doctor` reports, per engine, the path, size, health and where the archive can
+come from, and checks the required members inside the installed zip. It exits
+`1` when any engine is missing or unhealthy.
 
 ### `WehniX doctor`
 

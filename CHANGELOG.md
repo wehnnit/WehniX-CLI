@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.0
+
+First-run setup, with pinned and verified engine downloads.
+
+**Added**
+
+* `WehniX setup` creates the same data folder the desktop app does (`Engine/`,
+  `bottles/`, `cli/`, `logs/`), writes a desktop-shaped `config.json`, an empty
+  `bottles.json`, and installs the Universal engine.
+  `--engine steam` and `--engine 11.11` add or install others.
+* `WehniX engines install universal|steam|11.11` installs one engine without
+  touching `config.json`, and `WehniX engines doctor` reports each engine's
+  path, size, health and required members.
+* Downloads are pinned to three WX-Wine release assets, over HTTPS, verified by
+  SHA-256 while streaming, written to `.part` and promoted only on a match.
+* A verified archive already in `Engine/.downloads/` is reused instead of being
+  fetched again; mismatched or partial files are deleted.
+* The superseded Universal build (`e8e77b…05f5`, missing
+  `scripts/wx-session.sh`) is refused even though its own checksum is valid.
+* Archives are validated before extraction, after extraction and after
+  repacking to the desktop's `Engine/WehniX Engine ….zip`; `setup_complete` is
+  written only after that verification passes.
+* `--force` is required to install while WehniX.app is open.
+
+**Changed**
+
+* The README's "nothing is downloaded" claim now states exactly what the
+  network is used for: an explicit `setup` or `engines install`, nothing else.
+* `doctor` names the installed engine's path and suggests `WehniX setup` when
+  the Universal archive is missing.
+* The Engines empty state points at `WehniX setup` instead of only the app.
+
+**Limits**
+
+* Universal's helper scripts are installed as shipped. The desktop repoints
+  them at the Python inside `WehniX.app` before sealing the bundle; the CLI has
+  no such interpreter to point at.
+
 ## 0.2.1
 
 Doctor tells first run apart from breakage.

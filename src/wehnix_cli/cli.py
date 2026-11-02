@@ -13,9 +13,10 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__
+from . import __version__, engine_setup
 from .actions import (
     ActionError,
+    app_is_running,
     available_bottle_settings,
     reveal,
     set_bottle_setting,
@@ -190,7 +191,127 @@ def cmd_games(args) -> int:
     return EXIT_OK
 
 
+def _setup_progress(message: str, percent: int | None = None) -> None:
+    suffix = f"  [dim]{percent}%[/]" if percent is not None else ""
+    _console().print(f"  [dim]·[/] {message}{suffix}", soft_wrap=True)
+
+
+def _refuse_when_app_running(force: bool) -> bool:
+    """Setup writes huge files; the app would fight it. Refuse unless forced."""
+    if force or not app_is_running():
+        return False
+    _console().print(
+        "[red]WehniX is open.[/] Quit it first, then run setup again — or pass "
+        "--force if you are sure nothing in the app is writing its engines."
+    )
+    return True
+
+
+def cmd_setup(args) -> int:
+    root = state_root()
+    if _refuse_when_app_running(getattr(args, "force", False)):
+        return EXIT_ERROR
+    versions = list(getattr(args, "engine", None) or [])
+    try:
+        versions = [engine_setup.resolve_version(value) for value in versions] or [
+            engine_setup.contract.UNIVERSAL
+        ]
+    except engine_setup.SetupError as exc:
+        _console().print(f"[red]{exc}[/]")
+        return EXIT_ERROR
+
+    if not args.json:
+        console = _console()
+        console.print(f"[bold]WehniX setup[/] [dim]{root}[/]\n")
+    try:
+        result = engine_setup.setup(
+            root, versions, progress=None if args.json else _setup_progress
+        )
+    except engine_setup.SetupError as exc:
+        _console().print(f"[red]{exc}[/]")
+        return EXIT_ERROR
+
+    if args.json:
+        _print_json(result)
+    else:
+        console = _console()
+        for engine in result.get("engines") or []:
+            reused = " (reused a verified download)" if engine.get("reused") else ""
+            console.print(
+                f"  [green]✓[/] {engine_setup.label(engine['version'])}"
+                f"  [dim]{engine['engine_zip']}{reused}[/]",
+                soft_wrap=True,
+            )
+        console.print("\n[green]Setup complete.[/] Run `WehniX` to create a bottle.")
+    return EXIT_OK if result.get("success") else EXIT_ERROR
+
+
+def _cmd_engines_install(args) -> int:
+    version = getattr(args, "version", None)
+    if not version:
+        _console().print(
+            "Choose an engine: WehniX engines install universal|steam|11.11"
+        )
+        return EXIT_ERROR
+    try:
+        version = engine_setup.resolve_version(version)
+    except engine_setup.SetupError as exc:
+        _console().print(f"[red]{exc}[/]")
+        return EXIT_ERROR
+    if _refuse_when_app_running(getattr(args, "force", False)):
+        return EXIT_ERROR
+    root = state_root()
+    try:
+        result = engine_setup.install(
+            version, root, progress=None if args.json else _setup_progress
+        )
+    except engine_setup.SetupError as exc:
+        _console().print(f"[red]{exc}[/]")
+        return EXIT_ERROR
+    if args.json:
+        _print_json(result)
+    else:
+        reused = " from a verified download" if result.get("reused") else ""
+        _console().print(
+            f"[green]{engine_setup.label(version)} installed{reused}.[/] "
+            f"{human_bytes(result.get('bytes'))}"
+        )
+        _console().print(f"[dim]{result['engine_zip']}[/]", soft_wrap=True)
+    return EXIT_OK
+
+
+def _cmd_engines_doctor(args) -> int:
+    root = state_root()
+    reports = engine_setup.inspect_all(root)
+    if args.json:
+        _print_json({"root": str(root), "engines": reports})
+        return EXIT_OK if all(item["healthy"] for item in reports) else EXIT_ERROR
+    console = _console()
+    console.print(f"[bold]Engines[/] [dim]{root / engine_setup.ENGINE_DIR}[/]\n")
+    for report in reports:
+        mark = "[green]✓[/]" if report["healthy"] else "[yellow]![/]"
+        size = human_bytes(report["size"]) if report["installed"] else "not installed"
+        console.print(
+            f" {mark} [bold]{report['label']}[/]  [dim]{size}[/]  "
+            f"[dim]{report['source']}[/]",
+            soft_wrap=True,
+        )
+        console.print(f"     [dim]{report['path']}[/]", soft_wrap=True)
+        if report["problem"]:
+            console.print(f"     [yellow]{report['problem']}[/]", soft_wrap=True)
+    return EXIT_OK if all(item["healthy"] for item in reports) else EXIT_ERROR
+
+
 def cmd_engines(args) -> int:
+    action = getattr(args, "action", "list") or "list"
+    if action == "install":
+        return _cmd_engines_install(args)
+    if action == "doctor":
+        return _cmd_engines_doctor(args)
+    return _cmd_engines_list(args)
+
+
+def _cmd_engines_list(args) -> int:
     snapshot = _require_state(args)
     if args.json:
         _print_json(
@@ -530,9 +651,25 @@ def build_parser() -> argparse.ArgumentParser:
     games.add_argument("--json", action="store_true")
     games.set_defaults(func=cmd_games)
 
-    engines = sub.add_parser("engines", help="list installed engine archives")
+    engines = sub.add_parser("engines", help="list, install or check engine archives")
+    engines.add_argument(
+        "action", nargs="?", choices=("list", "install", "doctor"), default="list"
+    )
+    engines.add_argument("version", nargs="?", help="universal, steam or 11.11")
     engines.add_argument("--json", action="store_true")
+    engines.add_argument("--force", action="store_true", help="install even while WehniX is open")
     engines.set_defaults(func=cmd_engines)
+
+    setup = sub.add_parser("setup", help="create the data folder and install an engine")
+    setup.add_argument(
+        "--engine",
+        action="append",
+        metavar="VERSION",
+        help="universal (default), steam or 11.11; repeatable",
+    )
+    setup.add_argument("--json", action="store_true")
+    setup.add_argument("--force", action="store_true", help="run even while WehniX is open")
+    setup.set_defaults(func=cmd_setup)
 
     doctor = sub.add_parser("doctor", help="check the environment")
     doctor.add_argument("--json", action="store_true")

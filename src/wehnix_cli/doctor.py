@@ -270,7 +270,9 @@ def _engine_checks(
         Check(
             "Engine 11.17 Universal",
             bool(universal),
-            f"{universal[0].size / GIB:.2f} GB" if universal else "not installed yet",
+            f"{universal[0].size / GIB:.2f} GB · {universal[0].path}"
+            if universal
+            else "not installed yet — `WehniX setup` installs it",
             "Open WehniX and finish setup — the app downloads it."
             if app_installed
             else "Install WehniX.app, then run its setup; the CLI cannot download engines.",
@@ -287,8 +289,10 @@ def _engine_checks(
         Check(
             "Engine 11.17 Steam",
             bool(steam),
-            f"{steam[0].size / GIB:.2f} GB" if steam else "not installed yet",
-            "Only needed for Steam bottles; install it from setup in WehniX.",
+            f"{steam[0].size / GIB:.2f} GB · {steam[0].path}"
+            if steam
+            else "not installed yet",
+            "Only needed for Steam bottles: WehniX setup --engine steam.",
             severity="warning",
         )
     )

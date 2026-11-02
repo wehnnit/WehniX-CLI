@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.2.1-7c5cff?style=flat-square"></a>
+  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.3.0-7c5cff?style=flat-square"></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-000000?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d9cff?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3ddc97?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-91%20passing-3ddc97?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-108%20passing-3ddc97?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-ffb454?style=flat-square">
 </p>
 
@@ -27,7 +27,8 @@ doctor that explains what is wrong, and the app log without opening the app.
 
 It is a second front end, not a second app. Create a bottle in the terminal and
 the window shows it; delete one in the window and the terminal stops listing it.
-There is no sign-in, no sync, no telemetry, and nothing is downloaded.
+There is no sign-in, no sync and no telemetry. The only network access is the
+engine download you ask for explicitly with `WehniX setup`.
 
 ## Install
 
@@ -50,19 +51,51 @@ python3 -m pip install --user git+https://github.com/wehnnit/WehniX-CLI.git
 The command answers to `WehniX`, `wehniX`, `wehnix` and `Wehnix`; the installer
 creates every spelling the filesystem can tell apart.
 
-Requires macOS 13 or newer and Python 3.9+. The desktop app must have run at
-least once, because this CLI has no setup of its own — it reads the app's folder
-and refuses to invent one.
+Requires macOS 13 or newer and Python 3.9+. If the desktop app has never run on
+this Mac, `WehniX setup` creates the same folder it would and installs the
+engine; if the app already set things up, the CLI simply reads what is there.
 
 ## Quick start
 
 ```sh
+WehniX setup           # first run: data folder + the Universal engine
 WehniX                 # the interface
 WehniX list            # bottles, one line each
 WehniX list --json     # the same, for scripts
 WehniX doctor          # is this machine ready to run a bottle?
 WehniX logs -n 50      # the tail of wehniX.log
 ```
+
+## Setup, disk and network
+
+```sh
+WehniX setup                       # Universal: the recommended engine
+WehniX setup --engine steam        # Universal and the Steam engine
+WehniX engines install 11.11       # an archive for bottles you already have
+WehniX engines doctor              # per-engine path, size and health
+```
+
+* **Network is opt-in.** Only `WehniX setup` and `WehniX engines install`
+  download. `list`, `show`, `games`, `doctor`, `open`, `logs`, `settings`,
+  `storage`, `engines` and the interface make no requests at all.
+* **Pinned assets only.** GitHub releases over HTTPS, verified by SHA-256
+  before anything is extracted: Universal
+  `WX-wine-11.17-Universal.tar.xz` `04a677…4384`, Steam `WX-wine-11.17.tar.xz`
+  `6aa499…94ee`, 11.11 `WehniX-Engine-11.11-macos.tar.xz` `a8ca3e…aa5c`. Any
+  other URL is refused, and there is no way to pass one in.
+* **The superseded Universal build is refused** (`e8e77b…05f5`) even though its
+  own checksum is valid: it ships without `scripts/wx-session.sh`, so integrity
+  alone is not enough.
+* **Reuse, not re-download.** A verified archive in `Engine/.downloads/` is
+  reused; a partial or mismatched file is deleted rather than retried forever.
+* **Disk.** Budget about 3 GB free per 11.17 engine (archive, extraction, and
+  the installed zip), and the finished Universal zip is roughly 1 GB. Setup
+  checks free space before it starts.
+* **Honest state.** `setup_complete` is written only after the engine passes
+  its required-file and zip verification. An interrupted or failed setup leaves
+  the config at `setup_complete: false` and no engine zip.
+* No account, no telemetry, no unpinned download, and no downloaded script is
+  ever executed.
 
 ## Keys
 
@@ -138,8 +171,10 @@ the hint says so. Skips are never counted as errors or warnings.
   archive cannot write outside its staging folder.
 
 **What it deliberately does not do.** No account, no cloud, no playtime
-upload, no Epic login, no Steam launch, no engine download, no silent updater,
-and no deleting anything the user did not select. Epic titles are managed by the
+upload, no Epic login, no Steam launch, no silent updater, no background
+download, and no deleting anything the user did not select. Engine archives are
+fetched only by an explicit `setup`/`engines install`, from the pinned
+WX-Wine release assets. Epic titles are managed by the
 desktop app and are not guessed at from a cache. Those limits are in
 [Limitations](#limitations) rather than hidden behind a button that fails.
 
@@ -294,7 +329,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                                  # 91 tests, no network, no real data
+pytest                                  # 108 tests, no network, no real data
 WEHNIX_CLI_STATE_DIR="$PWD/tests/fixtures/state" WehniX
 python scripts/make_screenshot.py       # regenerate docs/cli.svg
 ```
@@ -315,8 +350,13 @@ never sends anything to the real Trash.
   report `renders=1`, Universal has no esync, 11.17 has no high resolution, and
   a Steam bottle always launches Steam. Window geometry and per-game overrides
   stay in the app.
-* **Creation is local.** It needs an engine archive already in `Engine/`; it
-  never downloads one, and it reports a failed `codesign` instead of hiding it.
+* **Creation needs an engine.** Either let WehniX's setup install one or run
+  `WehniX setup`; creation reports a failed `codesign` instead of hiding it.
+* **The desktop patches Universal's helper scripts; this CLI does not.** Before
+  sealing the archive the app repoints `wx-*` helpers at the Python inside
+  `WehniX.app`. With no app bundle to point at, the CLI installs the verified
+  engine directory unchanged, so those helpers keep their own `python3`
+  reference. Digest, required files and zip structure are still checked.
 * **Beta.** The interface and the JSON shapes may still change between 0.x
   releases.
 
