@@ -48,3 +48,6 @@ First public release.
   instead of failing with "cannot detect archive format".
 * `doctor` exits `2` when the data folder does not exist yet, matching the
   documented exit codes for every other command.
+* The installer detects a case-insensitive volume by file contents, so it
+  creates `WehniX` (not whichever spelling ran last) and never duplicates it
+  on a re-run.

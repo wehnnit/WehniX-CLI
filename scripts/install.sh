@@ -41,9 +41,13 @@ exec "$HOME/.local/share/wehniX-cli/bin/python" -m wehnix_cli "$@"
 EOF
 chmod +x "$LAUNCHER"
 
-# How many spellings can this filesystem actually tell apart?
+# How many spellings can this filesystem actually tell apart? Writing two
+# files is not proof: on a case-insensitive volume the second write lands on
+# the first, so the *contents* are what must differ.
 case_sensitive=0
-if printf 'x' > "$BIN_DIR/.wehniX-case-A" 2>/dev/null && printf 'x' > "$BIN_DIR/.wehniX-case-a" 2>/dev/null; then
+if printf 'A' > "$BIN_DIR/.wehniX-case-A" 2>/dev/null \
+  && printf 'a' > "$BIN_DIR/.wehniX-case-a" 2>/dev/null \
+  && [ "$(cat "$BIN_DIR/.wehniX-case-A" 2>/dev/null)" = "A" ]; then
   case_sensitive=1
 fi
 rm -f "$BIN_DIR/.wehniX-case-A" "$BIN_DIR/.wehniX-case-a" 2>/dev/null || true
