@@ -9,7 +9,8 @@ description = "A terminal client for WehniX — the same bottles, the same engin
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
-authors = [{ name = "WEHNIT", url = "https://github.com/wehnnit" }]
+authors = [{ name = "WEHNIT" }]
+maintainers = [{ name = "WEHNIT" }]
 keywords = ["wehniX", "wine", "bottles", "macos", "tui", "cli"]
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
