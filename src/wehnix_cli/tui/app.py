@@ -62,10 +62,15 @@ TAIL_SECONDS = 3
 LOG_LINES = 400
 
 
-def _mark(ok: bool, severity: str = "error") -> str:
-    if ok:
+def _mark(ok: bool, severity: str = "error", status: str = "") -> str:
+    state = status or (
+        "passed" if ok else ("warning" if severity in ("warning", "info") else "failed")
+    )
+    if state == "passed":
         return f"[{OK}]✓[/]"
-    if severity == "warning":
+    if state == "skipped":
+        return f"[{MUTED}]–[/]"
+    if state == "warning":
         return f"[{WARN}]![/]"
     return f"[{ERR}]✗[/]"
 
@@ -269,13 +274,19 @@ class DoctorView(Vertical):
         scroll = self.query_one("#doctor-scroll", VerticalScroll)
         scroll.remove_children()
         for check in checks:
+            skipped = check.status == "skipped"
             detail = f"  [{MUTED}]{check.detail}[/]" if check.detail else ""
             hint = "" if check.ok else f"\n[{MUTED}]    {check.hint}[/]"
-            name = f"[bold]{check.name}[/]" if not check.ok else check.name
+            if skipped:
+                name, classes = f"[{MUTED}]{check.name}[/]", "doctor-row skipped"
+            elif check.ok:
+                name, classes = check.name, "doctor-row"
+            else:
+                name, classes = f"[bold]{check.name}[/]", "doctor-row"
             scroll.mount(
                 Static(
-                    f"{_mark(check.ok, check.severity)} {name}{detail}{hint}",
-                    classes="doctor-row",
+                    f"{_mark(check.ok, check.severity, check.status)} {name}{detail}{hint}",
+                    classes=classes,
                 )
             )
 

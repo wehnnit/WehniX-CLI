@@ -101,13 +101,25 @@ rather than called broken.
 WehniX doctor [--json]
 ```
 
-Checks, in order: data folder, its permissions, `config.json`, setup flag,
-bottles folder, bottle bundles, duplicate records, both 11.17 engines, plausible
-archives, the engine new bottles use, macOS version, Rosetta on Apple Silicon,
-free disk (15 GB), the log file and its folder, this CLI on `PATH`, installed
-WehniX.app copies, and whether the app is open for writes.
+Checks, in order: data folder, its permissions, the private-folder mode,
+`config.json`, setup flag, bottles folder, bottle bundles, duplicate records,
+both 11.17 engines, plausible archives, the engine new bottles use, macOS
+version, Rosetta on Apple Silicon, free disk (15 GB), the log file and its
+folder, this CLI on `PATH`, installed WehniX.app copies, and whether the app is
+open for writes.
 
-Exits `1` when an error-severity check fails. Warnings do not fail the command.
+Every check has a `status`: `passed`, `failed`, `warning` or `skipped`.
+`skipped` means the question cannot be answered yet. On a Mac that has never
+run WehniX there is no data folder, so that is the single failure and
+`config.json`, the bottles checks, both engines and the logs are skipped rather
+than reported as a dozen separate problems — the app creates all of them during
+its setup. Skips are drawn dim, are never counted as errors or warnings, and
+still appear in `--json` so a script can tell "not set up" from "broken".
+
+`--json` returns `errors`, `warnings`, `skipped` and a `checks` array where each
+entry carries `status`. Exits `2` when the data folder has never been created,
+`1` when a failed check remains, `0` otherwise. Warnings alone do not fail the
+command.
 
 ### `WehniX settings`
 

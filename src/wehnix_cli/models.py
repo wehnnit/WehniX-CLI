@@ -182,13 +182,34 @@ class Game:
 
 @dataclass
 class Check:
-    """One doctor line."""
+    """One doctor line.
+
+    ``status`` is what the interface draws and what the totals count:
+    ``passed``, ``failed``, ``warning`` or ``skipped``. A skipped check means
+    the question cannot be answered yet (usually no data folder), so it is
+    never counted as a failure or a caution even though ``ok`` is true.
+    """
 
     name: str
     ok: bool
     detail: str = ""
     hint: str = ""
-    severity: str = "error"  # error | warning
+    severity: str = "error"  # error | warning | info
+    status: str = ""  # passed | failed | warning | skipped; derived when empty
+
+    def __post_init__(self) -> None:
+        if self.status in ("passed", "failed", "warning", "skipped"):
+            return
+        if self.ok:
+            self.status = "passed"
+        elif self.severity in ("warning", "info"):
+            self.status = "warning"
+        else:
+            self.status = "failed"
+
+    @property
+    def skipped(self) -> bool:
+        return self.status == "skipped"
 
 
 @dataclass

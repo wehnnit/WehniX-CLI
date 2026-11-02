@@ -227,6 +227,7 @@ def cmd_engines(args) -> int:
 def cmd_doctor(args) -> int:
     checks = run_checks()
     errors, warnings = summary(checks)
+    skipped = sum(1 for check in checks if check.status == "skipped")
     # A missing data folder is "no state yet" (2), not "the environment is
     # broken" (1): the user has not run the app, which the hint says.
     missing_state = not state_root().is_dir()
@@ -235,10 +236,12 @@ def cmd_doctor(args) -> int:
             {
                 "errors": errors,
                 "warnings": warnings,
+                "skipped": skipped,
                 "checks": [
                     {
                         "name": check.name,
                         "ok": check.ok,
+                        "status": check.status,
                         "detail": check.detail,
                         "hint": check.hint,
                         "severity": check.severity,
@@ -252,20 +255,31 @@ def cmd_doctor(args) -> int:
     console = _console()
     console.print(f"[bold]WehniX CLI {__version__}[/] [dim]· doctor[/]\n")
     for check in checks:
-        if check.ok:
+        if check.status == "passed":
             mark = "[green]✓[/]"
-        elif check.severity == "warning":
+        elif check.status == "skipped":
+            mark = "[dim]–[/]"
+        elif check.status == "warning":
             mark = "[yellow]![/]"
         else:
             mark = "[red]✗[/]"
-        console.print(f" {mark} [bold]{check.name}[/]  [dim]{check.detail}[/]")
-        if not check.ok and check.hint:
+        if check.status == "skipped":
+            name = f"[dim]{check.name}[/]"
+        elif check.status == "failed":
+            name = f"[bold]{check.name}[/]"
+        else:
+            name = check.name
+        console.print(f" {mark} {name}  [dim]{check.detail}[/]")
+        if check.status not in ("passed", "skipped") and check.hint:
             console.print(f"     [dim]{check.hint}[/]")
     console.print()
+    tail = f"{warnings} warning(s)"
+    if skipped:
+        tail += f", {skipped} not applicable yet"
     if errors:
-        console.print(f"[red]{errors} error(s)[/], {warnings} warning(s)")
+        console.print(f"[red]{errors} error(s)[/], {tail}")
     else:
-        console.print(f"[green]No errors[/] — {warnings} warning(s)")
+        console.print(f"[green]No errors[/] — {tail}")
     return EXIT_NO_DATA if missing_state else (EXIT_ERROR if errors else EXIT_OK)
 
 

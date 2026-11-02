@@ -143,6 +143,10 @@ DataTable > .datatable--odd-row {{
     padding: 0 1;
     background: transparent;
 }}
+/* A skipped check is a question that cannot be answered yet, not a failure. */
+.doctor-row.skipped {{
+    color: {MUTED};
+}}
 
 /* -------------------------------------------------------------------- logs */
 

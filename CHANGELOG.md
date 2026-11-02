@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.1
+
+Doctor tells first run apart from breakage.
+
+**Fixed**
+
+* A Mac that has never run WehniX no longer reports a dozen errors. The missing
+  data folder is the single failure; `config.json`, setup, the bottles checks,
+  both engines and the logs are `skipped` instead, with one hint naming the next
+  step: open WehniX.app and finish setup, which is what installs engines.
+* The private-folder check is skipped when there is no folder to judge, instead
+  of failing with a `chmod` hint for a path that does not exist.
+* A missing `config.json` is a warning, not an error, while an unreadable one
+  stays an error.
+* `Engine archives look complete` reports `skipped` when no archive exists, so
+  it can no longer pass without checking anything.
+* `Engine for new bottles` is answered from installed archives only.
+* An absent `WehniX.app` is a warning: this CLI is a front end, not the
+  installer.
+
+**Added**
+
+* `Check.status` (`passed`, `failed`, `warning`, `skipped`), exposed in
+  `doctor --json` together with `skipped` totals. Skips are not counted as
+  errors or warnings and are drawn dim in the interface.
+* Tests for a missing folder, an unreadable one, a world-writable one, a
+  missing config, an absent app, and empty / near-threshold / healthy engine
+  archives.
+
 ## 0.2.0
 
 Per-bottle settings, read from the engine instead of the registry.

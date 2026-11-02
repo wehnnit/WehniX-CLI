@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.2.0-7c5cff?style=flat-square"></a>
+  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.2.1-7c5cff?style=flat-square"></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-000000?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d9cff?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3ddc97?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-82%20passing-3ddc97?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-91%20passing-3ddc97?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-ffb454?style=flat-square">
 </p>
 
@@ -106,6 +106,12 @@ shapes the desktop writes:
 **Reads are read-only and cheap.** One snapshot per refresh; `du` over a bottle
 and the Steam-manifest scan run in worker threads so the interface never blocks.
 The log follows on a timer only while the Logs section is open.
+
+**A Mac that has never run WehniX is not a broken Mac.** Doctor checks carry a
+`status`. When the data folder does not exist yet, that is the one failure, and
+`config.json`, the bottle checks, the engines and the logs are marked `skipped`
+instead of red; engines are installed by the app's setup, not by this CLI, and
+the hint says so. Skips are never counted as errors or warnings.
 
 **Writes are few, guarded, and reversible.**
 
@@ -288,7 +294,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                                  # 82 tests, no network, no real data
+pytest                                  # 91 tests, no network, no real data
 WEHNIX_CLI_STATE_DIR="$PWD/tests/fixtures/state" WehniX
 python scripts/make_screenshot.py       # regenerate docs/cli.svg
 ```
