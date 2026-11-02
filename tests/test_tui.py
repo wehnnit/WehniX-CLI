@@ -1,9 +1,9 @@
-"""The interface has to open, paint, and switch sections without a traceback."""
+"""The interface has to open, paint, set itself up, and never need a keypress."""
 
 from __future__ import annotations
 
 import asyncio
-
+import time
 from pathlib import Path
 
 from textual.widgets import Button, ContentSwitcher, DataTable, Footer, Input, ListView, Static
@@ -72,8 +72,17 @@ def _bare_machine(tmp_path, monkeypatch):
     return root
 
 
-def test_first_run_opens_setup_and_creates_nothing(tmp_path, monkeypatch, no_app):
+def test_first_run_starts_setup_without_a_keypress(tmp_path, monkeypatch, no_app):
     root = _bare_machine(tmp_path, monkeypatch)
+    started: list[tuple[Path, list[str]]] = []
+
+    def failing_setup(path, versions, progress=None, cancel=None):
+        started.append((Path(path), list(versions)))
+        if progress is not None:
+            progress("Pretending to install…", 42)
+        return {"success": False, "error": "the network is down"}
+
+    monkeypatch.setattr(engine_setup, "setup", failing_setup)
 
     async def scenario():
         app = WehniXCLI(first_run=True)
@@ -83,7 +92,6 @@ def test_first_run_opens_setup_and_creates_nothing(tmp_path, monkeypatch, no_app
             await pilot.pause()
             assert app.query_one("#content", ContentSwitcher).current == "view-setup"
             assert app.query_one("#view-setup", SetupView).display is True
-            assert app.query_one("#setup-start", Button).size.width > 0
             assert app.query_one(Footer).size.height == 1
             # Other sections are not reachable until setup has run.
             app.action_goto("games")
@@ -91,12 +99,23 @@ def test_first_run_opens_setup_and_creates_nothing(tmp_path, monkeypatch, no_app
             await pilot.pause()
             assert app.query_one("#content", ContentSwitcher).current == "view-setup"
             assert app.query_one("#nav", ListView).disabled is True
+            # A failure leaves a visible reason and a working retry.
+            for _ in range(80):
+                await pilot.pause(0.01)
+                if "network is down" in str(app.query_one("#setup-result", Static).render()):
+                    break
+            assert "network is down" in str(app.query_one("#setup-result", Static).render())
+            assert app.query_one("#setup-retry", Button).display is True
 
     asyncio.run(scenario())
-    assert not root.exists(), "opening the interface must not create the data folder"
+    # The install was started by mounting the app, with no keypress or button.
+    assert started == [
+        (root, list(engine_setup.DEFAULT_SETUP_VERSIONS))
+    ]
+    assert not root.exists(), "a stubbed setup must not create the data folder"
 
 
-def test_first_run_install_uses_the_shared_installer(tmp_path, monkeypatch, no_app):
+def test_first_run_install_lands_on_bottles_and_reloads(tmp_path, monkeypatch, no_app):
     root = _bare_machine(tmp_path, monkeypatch)
     calls: dict[str, object] = {}
 
@@ -118,8 +137,7 @@ def test_first_run_install_uses_the_shared_installer(tmp_path, monkeypatch, no_a
         app = WehniXCLI(first_run=True)
         async with app.run_test(size=(118, 34)) as pilot:
             await pilot.pause()
-            app.action_setup_start()
-            for _ in range(60):
+            for _ in range(80):
                 await pilot.pause(0.02)
                 if app.query_one("#content", ContentSwitcher).current == "view-bottles":
                     break
@@ -129,7 +147,7 @@ def test_first_run_install_uses_the_shared_installer(tmp_path, monkeypatch, no_a
 
     asyncio.run(scenario())
     assert calls["root"] == root
-    # The default first-run choice installs both 11.17 engines.
+    # The first run installs both 11.17 engines, the desktop's active set.
     assert calls["versions"] == [
         engine_setup.contract.UNIVERSAL,
         engine_setup.contract.STEAM,
@@ -148,15 +166,14 @@ def test_failed_setup_stays_on_the_first_run_screen(tmp_path, monkeypatch, no_ap
         app = WehniXCLI(first_run=True)
         async with app.run_test(size=(118, 34)) as pilot:
             await pilot.pause()
-            app.action_setup_start()
-            for _ in range(60):
+            for _ in range(80):
                 await pilot.pause(0.02)
-                if not app.query_one("#setup-start", Button).disabled and app._setup_done is False:
+                if app._setup_running is False and app._setup_done is False:
                     break
             assert app._setup_running is False
             assert app.query_one("#content", ContentSwitcher).current == "view-setup"
             # Retry stays possible after a failure.
-            assert app.query_one("#setup-start", Button).disabled is False
+            assert app.query_one("#setup-retry", Button).display is True
             assert "disk is full" in str(app.query_one("#setup-result", Static).render())
 
     asyncio.run(scenario())
@@ -172,12 +189,61 @@ def test_setup_refuses_while_the_desktop_app_is_open(tmp_path, monkeypatch):
         app = WehniXCLI(first_run=True)
         async with app.run_test(size=(118, 34)) as pilot:
             await pilot.pause()
-            app.action_setup_start()
             for _ in range(20):
                 await pilot.pause(0.02)
+            assert app._setup_running is False
+            assert app.query_one("#setup-retry", Button).display is True
 
     asyncio.run(scenario())
     assert started == [], "the installer must not run while WehniX is open"
+
+
+def test_quitting_during_setup_cancels_the_worker(tmp_path, monkeypatch, no_app):
+    _bare_machine(tmp_path, monkeypatch)
+    observed: dict[str, bool] = {}
+
+    def slow_setup(path, versions, progress=None, cancel=None):
+        for _ in range(200):
+            if cancel is not None and cancel():
+                observed["cancelled"] = True
+                return {"success": False, "cancelled": True, "error": "Setup cancelled."}
+            time.sleep(0.005)
+        observed["timed_out"] = True
+        return {"success": False, "error": "never cancelled"}
+
+    monkeypatch.setattr(engine_setup, "setup", slow_setup)
+
+    async def scenario():
+        app = WehniXCLI(first_run=True)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app.action_quit()
+            assert app._quit_when_setup_stops is True
+            assert app._setup_cancel.is_set() is True
+            for _ in range(200):
+                await pilot.pause(0.01)
+                if "cancelled" in observed:
+                    break
+
+    asyncio.run(scenario())
+    assert observed.get("cancelled") is True
+    assert "timed_out" not in observed
+
+
+def test_complete_installation_does_not_start_setup(state_dir, no_app, monkeypatch):
+    """A finished, valid folder is a dashboard, not a 1.8 GB download."""
+    started: list[int] = []
+    monkeypatch.setattr(engine_setup, "setup", lambda *a, **k: started.append(1))
+    monkeypatch.setattr(engine_setup, "needs_setup", lambda *a, **k: False)
+
+    async def scenario():
+        app = WehniXCLI()
+        async with app.run_test(size=(118, 34)) as pilot:
+            await pilot.pause()
+            assert app.query_one("#content", ContentSwitcher).current == "view-bottles"
+
+    asyncio.run(scenario())
+    assert started == []
 
 
 def test_small_terminal_does_not_crash(state_dir, no_app):

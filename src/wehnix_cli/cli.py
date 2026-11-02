@@ -78,7 +78,7 @@ def _require_state(args=None):
     if not snapshot.exists:
         console = _console()
         console.print(f"[bold]No WehniX data yet.[/] Looked in {snapshot.root}")
-        console.print("Run the WehniX app once, or create the folder with: WehniX --init")
+        console.print("Run `WehniX` once — it sets the folder up — or `WehniX setup`.")
         raise SystemExit(EXIT_NO_DATA)
     return snapshot
 
@@ -191,6 +191,14 @@ def cmd_games(args) -> int:
     return EXIT_OK
 
 
+def _interactive() -> bool:
+    """Whether a real terminal is available to draw the interface in."""
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
 def _setup_progress(message: str, percent: int | None = None) -> None:
     suffix = f"  [dim]{percent}%[/]" if percent is not None else ""
     _console().print(f"  [dim]·[/] {message}{suffix}", soft_wrap=True)
@@ -221,15 +229,46 @@ def _engine_selection(args) -> list[str]:
     return values
 
 
+def _setup_without_a_terminal(root: Path) -> int:
+    """Plain launch with no TTY: set up with plain progress, never a hidden TUI."""
+    console = _console()
+    console.print(f"[bold]WehniX[/] [dim]{root}[/]")
+    console.print(
+        "[dim]There is no terminal to draw the interface in, so setup runs with "
+        "plain output.[/]"
+    )
+    if _refuse_when_app_running(False):
+        return EXIT_ERROR
+    try:
+        result = engine_setup.setup(root, progress=_setup_progress)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Setup cancelled.[/] Completed engines are kept.")
+        return EXIT_ERROR
+    except engine_setup.SetupError as exc:
+        console.print(f"[red]{exc}[/]")
+        return EXIT_ERROR
+    if not result.get("success"):
+        console.print(f"[red]{result.get('error') or 'Setup did not complete.'}[/]")
+        return EXIT_ERROR
+    for engine in result.get("engines") or []:
+        console.print(
+            f"  [green]✓[/] {engine_setup.label(engine['version'])}", soft_wrap=True
+        )
+    console.print(
+        "\n[green]Setup complete.[/] Open `WehniX` in a terminal for the interface."
+    )
+    return EXIT_OK
+
+
 def cmd_setup(args) -> int:
     root = state_root()
     if _refuse_when_app_running(getattr(args, "force", False)):
         return EXIT_ERROR
     versions = _engine_selection(args)
     try:
-        versions = [engine_setup.resolve_version(value) for value in versions] or [
-            engine_setup.contract.UNIVERSAL
-        ]
+        versions = [engine_setup.resolve_version(value) for value in versions] or list(
+            engine_setup.DEFAULT_SETUP_VERSIONS
+        )
     except engine_setup.SetupError as exc:
         _console().print(f"[red]{exc}[/]")
         return EXIT_ERROR
@@ -243,7 +282,7 @@ def cmd_setup(args) -> int:
         )
     except KeyboardInterrupt:
         _console().print(
-            "\n[yellow]Setup cancelled.[/] No engine was installed and "
+            "\n[yellow]Setup cancelled.[/] Engines that finished are kept; "
             "setup_complete was not written."
         )
         return EXIT_ERROR
@@ -256,13 +295,25 @@ def cmd_setup(args) -> int:
     else:
         console = _console()
         for engine in result.get("engines") or []:
+            if engine.get("skipped"):
+                console.print(
+                    f"  [green]✓[/] {engine_setup.label(engine['version'])}"
+                    f"  [dim]{engine.get('engine_zip', '')} (already installed)[/]",
+                    soft_wrap=True,
+                )
+                continue
             reused = " (reused a verified download)" if engine.get("reused") else ""
             console.print(
                 f"  [green]✓[/] {engine_setup.label(engine['version'])}"
                 f"  [dim]{engine['engine_zip']}{reused}[/]",
                 soft_wrap=True,
             )
-        console.print("\n[green]Setup complete.[/] Run `WehniX` to create a bottle.")
+        if result.get("already_set_up"):
+            console.print(
+                "\n[green]Already set up.[/] Run `WehniX` to create a bottle."
+            )
+        else:
+            console.print("\n[green]Setup complete.[/] Run `WehniX` to create a bottle.")
     return EXIT_OK if result.get("success") else EXIT_ERROR
 
 
@@ -660,7 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-setup",
         action="store_true",
-        help="with no subcommand, do not offer first-run setup when there is no data folder",
+        help="never set up automatically: with no data folder, print it and exit 2",
     )
 
     sub = parser.add_subparsers(dest="command")
@@ -688,7 +739,9 @@ def build_parser() -> argparse.ArgumentParser:
     engines.add_argument("--force", action="store_true", help="install even while WehniX is open")
     engines.set_defaults(func=cmd_engines)
 
-    setup = sub.add_parser("setup", help="create the data folder and install an engine")
+    setup = sub.add_parser(
+        "setup", help="create the data folder and install the engines (Universal + Steam)"
+    )
     setup.add_argument(
         "--engine",
         action="append",
@@ -765,26 +818,34 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_init(args)
 
     if getattr(args, "command", None) is None:
-        from .tui.app import run
+        root = state_root()
 
-        # A missing data folder is a first run, not an empty dashboard. The
-        # interface offers setup there; nothing is downloaded and no folder is
-        # created until the user starts it. `--no-setup` keeps the old
-        # "no data yet" behaviour for scripts and for people who want it.
-        if not state_root().is_dir():
-            if getattr(args, "no_setup", False):
+        if args.no_setup:
+            # Opt-out for scripts and for anyone who wants the old behaviour:
+            # no download, no write, and exit 2 when there is nothing to read.
+            if not root.is_dir():
                 console = _console()
-                console.print(f"[bold]No WehniX data yet.[/] Looked in {state_root()}")
+                console.print(f"[bold]No WehniX data yet.[/] Looked in {root}")
                 console.print(
-                    "Run `WehniX` and choose Install, or `WehniX setup` for the "
+                    "Run `WehniX` once and it sets itself up, or `WehniX setup` for the "
                     "same install without the interface."
                 )
                 return EXIT_NO_DATA
-            run(first_run=True)
+            prepare_state_dir()
+            from .tui.app import run
+
+            run()
             return EXIT_OK
 
-        prepare_state_dir()
-        run()
+        if not _interactive():
+            return _setup_without_a_terminal(root)
+
+        from .tui.app import run
+
+        # Launching the CLI is the confirmation. A missing, interrupted or
+        # unreadable data folder goes straight into setup with no button and no
+        # question; an unfinished run resumes there too.
+        run(first_run=engine_setup.needs_setup(root))
         return EXIT_OK
 
     return int(args.func(args) or 0)

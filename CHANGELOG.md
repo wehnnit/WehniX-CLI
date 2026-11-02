@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.5.0
+
+First run is automatic, and a half-finished one repairs itself.
+
+**Added**
+
+* Plain `WehniX` with missing, unreadable or unfinished data sets itself up
+immediately: no Install button, no engine question, no `enter`. It installs
+`11.17-universal` and `11.17-steam` — the desktop's `ACTIVE_ENGINE_VERSIONS` —
+with live progress, then drops into the bottles view. `q` cancels at a safe
+boundary and keeps whatever finished; `r` retries after a failure.
+* No terminal is required. Piped or scripted, a plain `WehniX` runs the same
+setup in plain text and exits `0` or `1` instead of trying to draw the
+interface.
+* `engine_setup.inspect_installation()` reports `pristine`, `incomplete`,
+`repairable`, `ready` or `blocked` without writing anything, so a launch knows
+whether setup is needed and a finished install is left alone.
+* Setup now creates the desktop wizard's whole layout, including `Updates/`,
+`WehniX-Epic/Games`, `WehniX-Epic/Legendary/{logs,operations,launches}` and
+`WehniX-Steam/Games`, and writes the desktop's full `settings` defaults
+(`bottle_location`, `update_manifest_url`, `install_extra_dependencies`).
+* A per-folder `flock` (`cli/.setup.lock`) stops two CLI processes from writing
+the same folder at once. It is released automatically when the holder exits.
+* Rosetta 2 is checked with the functional `/usr/bin/arch -x86_64` probe and
+installed when missing, before the first download rather than after it. The
+platform gate refuses a non-Mac or an Intel Mac before grabbing gigabytes.
+* Engine helper scripts whose Python interpreter is missing (for example one
+inside an absent `WehniX.app`) are repointed at the interpreter running the CLI
+before the bundle is sealed.
+
+**Changed**
+
+* `WehniX setup` now installs Universal *and* Steam by default, like the desktop
+wizard; `--engines universal` asks for Universal alone.
+* Setup resumes instead of restarting: an engine that already passes its
+required-file and zip checks is skipped, and only missing or damaged ones are
+fetched. A second launch of a finished install never touches the network.
+* Cancellation reports the truth — which engines were kept and which were not —
+instead of claiming nothing was installed.
+* `Steam` validation uses the desktop's full `steam_required_relative_paths()`
+contract rather than a small subset, and required *folders* are no longer
+reported missing because their zip members end in a slash.
+* A malformed `config.json` is preserved as `config.json.corrupt-<stamp>` before
+repair, and concurrent edits made while engines download survive the final
+write.
+
+**Fixed**
+
+* An interrupted install used to leave the data folder behind, so the next launch
+saw a folder and skipped setup. Readiness now looks at `setup_complete` and the
+engines, not directory existence.
+
 ## 0.4.0
 
 A Mac that has never run WehniX no longer needs the desktop app first.

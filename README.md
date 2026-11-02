@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.4.0-7c5cff?style=flat-square"></a>
-  <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-000000?style=flat-square">
+  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.5.0-7c5cff?style=flat-square"></a>
+  <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2014%2B-000000?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d9cff?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3ddc97?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-117%20passing-3ddc97?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-138%20passing-3ddc97?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-ffb454?style=flat-square">
 </p>
 
@@ -51,19 +51,20 @@ python3 -m pip install --user git+https://github.com/wehnnit/WehniX-CLI.git
 The command answers to `WehniX`, `wehniX`, `wehnix` and `Wehnix`; the installer
 creates every spelling the filesystem can tell apart.
 
-Requires macOS 13 or newer and Python 3.9+. You do not need the desktop app
-first: run `WehniX` on a Mac with no data folder and it opens a first-run screen
-that offers to create the same folder the app uses and install the pinned
-engines. Nothing is downloaded and nothing is created until you choose
-**Install**. `WehniX setup` does the same without the interface, and
-`WehniX --no-setup` keeps the old behaviour of opening with no data at all.
+Requires macOS 14 or newer on Apple Silicon, and Python 3.9+. You do not need
+the desktop app first: run `WehniX` on a Mac with no usable data folder and it
+sets itself up — the same folder the app uses, the same pinned engines, with
+progress as it goes. There is no Install button and no question to answer:
+opening the CLI is the confirmation. `WehniX setup` does the same without the
+interface, and `WehniX --no-setup` keeps the old behaviour of opening with no
+data at all.
 
 ## Quick start
 
 ```sh
-WehniX                 # the interface; offers first-run setup if there is no data
-WehniX setup           # the same install without the interface (Universal)
-WehniX --no-setup      # open with no data and no setup offer
+WehniX                 # the interface; sets itself up on first run
+WehniX setup           # the same install without the interface
+WehniX --no-setup      # never install; open with no data, exit 2 if absent
 WehniX list            # bottles, one line each
 WehniX list --json     # the same, for scripts
 WehniX doctor          # is this machine ready to run a bottle?
@@ -73,16 +74,29 @@ WehniX logs -n 50      # the tail of wehniX.log
 ## Setup, disk and network
 
 ```sh
-WehniX setup                       # Universal: the recommended engine
-WehniX setup --engines universal,steam   # add the Steam engine explicitly
-WehniX setup --engine steam        # the same, one engine per flag
-WehniX engines install 11.11       # an archive for bottles you already have
-WehniX engines doctor              # per-engine path, size and health
+WehniX                            # first run: sets up and installs both engines
+WehniX setup                      # the same, without the interface
+WehniX setup --engines universal  # Universal only, about 1 GB
+WehniX engines install 11.11      # an archive for bottles you already have
+WehniX engines doctor             # per-engine path, size and health
 ```
 
-* **Network is opt-in.** Only `WehniX setup` and `WehniX engines install`
-  download. `list`, `show`, `games`, `doctor`, `open`, `logs`, `settings`,
-  `storage`, `engines` and the interface make no requests at all.
+* **Network is used once, on first run.** A plain `WehniX` (or `WehniX setup`)
+  downloads the pinned archives only when the folder is missing, unreadable, or
+  unfinished. Every other command — `list`, `show`, `games`, `doctor`, `open`,
+  `logs`, `settings`, `storage`, `engines`, and the interface once it is set up —
+  makes no requests at all. An interrupted run resumes on the next launch, and an
+  engine that already verifies is never downloaded or repacked again.
+* **A complete install is left alone.** If the folder is set up but one engine
+  is missing, launching `WehniX` does *not* start a 1.8 GB download behind your
+  back: Doctor reports it and `WehniX setup` repairs it.
+* **No terminal needed.** Piped or run from a script, a plain `WehniX` performs
+  the same setup in plain text instead of drawing the interface, and exits `0`
+  or `1`.
+* **Rosetta 2 is installed if missing.** Setup runs the functional
+  `/usr/bin/arch -x86_64` probe first, then asks macOS to install Rosetta when it
+  is absent. macOS may still prompt for authorisation; the CLI cannot and does
+  not bypass that.
 * **Pinned assets only.** GitHub releases over HTTPS, verified by SHA-256
   before anything is extracted: Universal
   `WX-wine-11.17-Universal.tar.xz` `04a677…4384`, Steam `WX-wine-11.17.tar.xz`
@@ -122,8 +136,9 @@ WehniX engines doctor              # per-engine path, size and health
 | `?` | the key list |
 | `q` | quit |
 
-On the first-run screen: `enter` or `i` starts the install, `c` prints the
-command-line equivalent, and `q` leaves without creating anything.
+On the first-run screen the install has already started: `q` stops it at a safe
+boundary (engines that finished are kept), `r` retries after a failure, and `c`
+prints the command-line equivalent.
 
 Every action is also in the command palette, so nothing needs memorising.
 [`docs/cli-commands.md`](docs/cli-commands.md) lists every key and subcommand,

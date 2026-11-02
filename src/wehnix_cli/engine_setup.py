@@ -13,12 +13,18 @@ Ported from ``wehnix_app.py``:
   :: ensure_app_data_dir_exists, :: classify_setup_engine_versions,
   :: setup_directories_and_engine, :: DEFAULT_CONFIG.
 
-The desktop also patches Universal's helper scripts to the interpreter inside
-``WehniX.app`` before sealing the bundle. This CLI has no such interpreter, so
-it does not patch them: the installed archive is byte-checked against the
-engine's own layout, and the desktop can repair the interpreter references on
-its next engine check. That difference is documented in the README rather than
-hidden behind a claim of byte-identical output.
+Engine helper scripts that call Python are repointed at the interpreter running
+the CLI (``sys.executable``) before the bundle is sealed, but only when the
+interpreter a script names is missing or lives inside an absent
+``WehniX.app``. That is the desktop's ``patch_engine_script_interpreters`` step
+with the only interpreter this package can prove exists.
+
+``setup()`` is the single coordinator behind automatic first run, ``WehniX
+setup`` and the interface's progress screen: it inspects readiness, takes an
+exclusive lock on the data folder, creates the desktop's directory tree,
+installs only the engines that are missing or damaged, validates the result,
+and only then writes ``setup_complete``. Nothing here is imported by a routine
+read command, so ``list`` and ``doctor`` cannot start a download.
 
 Only the pinned URLs and digests below are used. There is no arbitrary URL
 input, no redirect to another host beyond GitHub's own release redirect, and no
@@ -27,12 +33,14 @@ TLS relaxation.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 import urllib.error
@@ -48,8 +56,6 @@ from .state import (
     BOTTLES_JSON,
     CONFIG_JSON,
     ENGINE_DIR,
-    file_signature,
-    read_json,
     write_json_atomic,
 )
 
@@ -189,17 +195,35 @@ UNIVERSAL_RUNTIME_FILES = (
     "scripts/command.sh",
 )
 
-# Copied from wehnix_app.py :: engine_templates.steam_required_relative_paths
-# (the subset that must exist for a Steam install to be usable).
+# Copied verbatim from engine_templates.py :: steam_required_relative_paths(),
+# which is the contract the desktop enforces before a Steam engine is reused.
 STEAM_REQUIRED_FILES = (
     "Contents/Info.plist",
     "Contents/MacOS/WX-wine-11.17",
-    "Contents/Resources/wine/bin/wine",
-    "Contents/Resources/bin/wx-wine",
-    "Contents/Resources/bin/wx-renderer",
-    "Contents/Resources/scripts/wx-bundle-env.sh",
-    "Contents/Resources/scripts/wx-ensure-prefix.sh",
-    "Contents/Resources/scripts/launch-game.sh",
+) + tuple(
+    "Contents/Resources/" + name
+    for name in (
+        "wine/bin/wine",
+        "wine/bin/wineserver",
+        "wine/bin/wx-wine",
+        "bin/wx-wine",
+        "bin/wx-renderer",
+        "scripts/wx-bundle-env.sh",
+        "scripts/wx-ensure-prefix.sh",
+        "scripts/wx-prefix-setting.sh",
+        "scripts/wx-renderer-env.sh",
+        "scripts/launch-game.sh",
+        "scripts/stop-steam.sh",
+        "scripts/verify-install.sh",
+        "scripts/relocate-prefix.sh",
+        "scripts/wx-find-steam.sh",
+        "scripts/wx-prereq-for-app.sh",
+        "scripts/wx-prereq-vcredist2019.sh",
+        "scripts/wx-prereq-directx-jun2010.sh",
+        "prefix-template/system.reg",
+        "prefix-template/user.reg",
+        "prefix-template/drive_c/windows/system32/",
+    )
 )
 
 UNIVERSAL_REQUIRED_FILES = (
@@ -225,6 +249,50 @@ REQUIRED_FILES = {
 # Copied from wehnix_app.py :: MIN_ENGINE_ZIP_BYTES. A real 11.17 archive is
 # ~1 GB, so anything below this is a truncated download or a stub.
 MIN_ENGINE_ZIP_BYTES = 100 * 1024 * 1024
+
+# Copied from wehnix_app.py :: ACTIVE_ENGINE_VERSIONS — the two 11.17 editions
+# the desktop's wizard installs. Legacy 11.11 stays an explicit opt-in.
+ACTIVE_ENGINE_VERSIONS = (contract.STEAM, contract.UNIVERSAL)
+
+# The first-run set, in install order. Universal is the bottle engine, Steam is
+# the client engine, and the desktop's own setup installs both on a new Mac.
+DEFAULT_SETUP_VERSIONS = (contract.UNIVERSAL, contract.STEAM)
+
+# Copied from wehnix_app.py :: DEFAULT_UPDATE_MANIFEST_URL.
+DEFAULT_UPDATE_MANIFEST_URL = (
+    "https://wehnix.wehnit-studios.workers.dev/updates/stable.json"
+)
+
+# Copied from wehnix_app.py :: ensure_app_data_dir_exists, :: UPDATES_DIR,
+# :: _create_epic_directories and :: _create_steam_directories. Creating the
+# Epic and Steam folders is layout only: no launcher is downloaded, no account
+# is requested, and nothing is written inside them.
+LAYOUT_DIRS = (
+    "",
+    "Engine",
+    "bottles",
+    "Updates",
+    "cli",
+    "logs",
+    "WehniX-Epic",
+    "WehniX-Epic/Games",
+    "WehniX-Epic/Legendary",
+    "WehniX-Epic/Legendary/logs",
+    "WehniX-Epic/Legendary/operations",
+    "WehniX-Epic/Legendary/launches",
+    "WehniX-Steam",
+    "WehniX-Steam/Games",
+)
+
+# Readiness states, mirroring wehnix_app.py :: determine_system_state.
+PRISTINE = "pristine"
+INCOMPLETE = "incomplete"
+REPAIRABLE = "repairable"
+READY = "ready"
+BLOCKED = "blocked"
+
+# The Universal bundle declares LSMinimumSystemVersion 14.0 and is arm64 only.
+MIN_UNIVERSAL_MACOS = (14, 0)
 
 MAX_DOWNLOAD_BYTES = 8 * 1024**3
 CHUNK_BYTES = 1024 * 1024
@@ -392,6 +460,38 @@ def space_problem(root: Path, count: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def ssl_context():
+    """A *verifying* TLS context that works on a stock macOS Python.
+
+    A python.org build on macOS ships without a CA bundle, so the default
+    context fails every HTTPS request with CERTIFICATE_VERIFY_FAILED — the first
+    thing a new user would hit. Loading the Mac's own root store keeps
+    verification on; it never disables it.
+    """
+    import ssl
+
+    context = ssl.create_default_context()
+    try:
+        context.load_default_certs()
+    except (OSError, ssl.SSLError):
+        pass
+    candidates: list[str] = []
+    try:  # optional, never a declared dependency
+        import certifi
+
+        candidates.append(certifi.where())
+    except Exception:
+        pass
+    candidates.extend(["/etc/ssl/cert.pem", "/private/etc/ssl/cert.pem"])
+    for candidate in candidates:
+        try:
+            if candidate and Path(candidate).is_file():
+                context.load_verify_locations(candidate)
+        except (OSError, ssl.SSLError):
+            continue
+    return context
+
+
 def download_archive(
     version: str,
     destination: Path,
@@ -423,7 +523,9 @@ def download_archive(
     request = urllib.request.Request(url, headers={"User-Agent": "WehniX-CLI"})
     report = throttled(progress)
     try:
-        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
+        with urllib.request.urlopen(
+            request, timeout=DOWNLOAD_TIMEOUT, context=ssl_context()
+        ) as response:
             total = int(response.headers.get("Content-Length") or 0)
             written = 0
             report(
@@ -435,7 +537,7 @@ def download_archive(
             with part.open("wb") as handle:
                 while True:
                     if cancel is not None and cancel():
-                        raise SetupError("Setup cancelled; nothing was installed.")
+                        raise SetupError("Setup cancelled.")
                     chunk = response.read(CHUNK_BYTES)
                     if not chunk:
                         break
@@ -532,11 +634,17 @@ def verify_zip(path: Path, version: str, min_bytes: int | None = None) -> None:
         )
     try:
         with zipfile.ZipFile(path) as archive:
-            names = set(archive.namelist())
+            # Directory members are stored with a trailing slash, so compare the
+            # names without one: otherwise every required *folder* looks absent.
+            names = {entry.rstrip("/") for entry in archive.namelist()}
     except (zipfile.BadZipFile, OSError) as exc:
         raise SetupError(f"{path.name} is not a readable zip: {exc}") from exc
     bundle = BUNDLE_NAME[version]
-    missing = [entry for entry in REQUIRED_FILES[version] if f"{bundle}/{entry}" not in names]
+    missing = [
+        entry
+        for entry in REQUIRED_FILES[version]
+        if f"{bundle}/{entry}".rstrip("/") not in names
+    ]
     if missing:
         raise SetupError(
             f"{path.name} is missing {', '.join(missing[:4])}. Nothing was installed."
@@ -557,6 +665,56 @@ def _find_app(staging: Path, version: str) -> Path:
         f"The {label(version)} archive does not contain "
         f"{remote(version)['app_name']}."
     )
+
+
+# Copied from wehnix_app.py :: patch_engine_script_interpreters, with the one
+# interpreter this package can prove exists. A helper that names an interpreter
+# inside an absent WehniX.app would never run, so its shebang is repointed at the
+# Python running the CLI before the bundle is sealed.
+HELPER_SHEBANG_LIMIT = 1024 * 1024
+
+
+def patch_helper_interpreters(app_path: Path, interpreter: str | None = None) -> list[str]:
+    """Repoint engine helper shebangs at a Python that exists on this Mac."""
+    chosen = str(interpreter or sys.executable or "").strip()
+    if not chosen:
+        return []
+    resources = Path(app_path) / "Contents" / "Resources"
+    if not resources.is_dir():
+        return []
+    patched: list[str] = []
+    for path in sorted(resources.rglob("*")):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            if path.stat().st_size > HELPER_SHEBANG_LIMIT:
+                continue
+            payload = path.read_bytes()
+        except OSError:
+            continue
+        if not payload.startswith(b"#!") or b"\x00" in payload[:256]:
+            continue
+        end = payload.find(b"\n")
+        if end < 0:
+            continue
+        line = payload[2:end].decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+        existing = line.split()[0]
+        if "python" not in existing or existing == chosen:
+            continue
+        # Only touch what cannot already run: a missing interpreter, or one that
+        # lives inside a WehniX.app this package has nothing to do with.
+        if Path(existing).exists() and "WehniX.app" not in existing:
+            continue
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            path.write_bytes(f"#!{chosen}".encode("utf-8") + payload[end:])
+            os.chmod(path, mode)
+        except OSError:
+            continue
+        patched.append(str(path))
+    return patched
 
 
 def _zip_app(app_path: Path, destination: Path) -> None:
@@ -618,7 +776,7 @@ def install_from_archive(
         except ActionError as exc:
             raise SetupError(str(exc)) from exc
         if cancel is not None and cancel():
-            raise SetupError("Setup cancelled before the engine was installed.")
+            raise SetupError("Setup cancelled.")
 
         app_path = _find_app(staging, version)
         target_name = BUNDLE_NAME[version]
@@ -628,6 +786,7 @@ def install_from_archive(
             app_path.rename(renamed)
             app_path = renamed
         verify_tree(app_path, version)
+        patched = patch_helper_interpreters(app_path)
 
         if progress is not None:
             progress(f"Repacking {label(version)}…", None)
@@ -648,6 +807,8 @@ def install_from_archive(
             "bytes": installed.stat().st_size,
             "source": source,
             "source_archive": str(archive),
+            "patched_interpreters": patched,
+            "healthy": True,
         }
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -688,60 +849,117 @@ def install(
 # ---------------------------------------------------------------------------
 
 
-def desktop_default_settings() -> dict:
-    """Copied from wehnix_app.py :: DEFAULT_CONFIG["settings"] (safe subset)."""
+def desktop_default_settings(root: Path | None = None) -> dict:
+    """Copied from wehnix_app.py :: DEFAULT_CONFIG["settings"].
+
+    ``bottle_location`` is dynamic in the desktop (``BOTTLES_DIR`` for whichever
+    data folder is in use), so it is computed per root instead of frozen into a
+    constant that would point at the wrong folder under ``--state-dir``.
+    """
+    base = Path(root) if root is not None else Path(".")
     return {
         "graphics_backend": "dxmt",
+        "bottle_location": str(base / "bottles"),
         "engine_version": contract.UNIVERSAL,
         "bottle_engine_version": contract.UNIVERSAL,
+        "update_manifest_url": DEFAULT_UPDATE_MANIFEST_URL,
         "auto_check_updates": True,
+        "install_extra_dependencies": True,
     }
 
 
-def ensure_layout(root: Path) -> list[str]:
-    """Create the directories the desktop's setup creates, nothing else.
+def read_config(path: Path) -> tuple[dict, str]:
+    """Read config.json as a dict, plus why it could not be read (or "")."""
+    path = Path(path)
+    if not path.is_file():
+        return {}, ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {}, f"{path.name} could not be read: {exc}"
+    if not isinstance(data, dict):
+        return {}, f"{path.name} is not a JSON object."
+    return data, ""
 
-    Copied from wehnix_app.py :: ensure_app_data_dir_exists, minus the Epic and
-    Steam trees: the CLI does not manage those, and empty look-alike folders
-    would make the app think they had been set up.
+
+def preserve_corrupt_config(path: Path) -> Path | None:
+    """Copy an unreadable config aside before it is ever replaced."""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        shutil.copyfile(path, backup)
+    except OSError:
+        return None
+    return backup
+
+
+def ensure_layout(root: Path) -> list[str]:
+    """Create the same directory tree the desktop's setup steps create.
+
+    Copied from wehnix_app.py :: ensure_app_data_dir_exists,
+    :: _create_epic_directories and :: _create_steam_directories. Layout only:
+    no launcher download, no account and no data inside the Epic/Steam trees.
     """
     root = Path(root)
     created: list[str] = []
-    for relative in ("", ENGINE_DIR, "bottles", "cli", "logs"):
+    for relative in LAYOUT_DIRS:
         target = root / relative if relative else root
-        if not target.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-            created.append(str(target))
+        if target.is_dir():
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+        created.append(str(target))
     return created
 
 
 def initialize_config(root: Path) -> Path:
-    """Write a desktop-shaped config, preserving any keys already there."""
+    """Write a desktop-shaped config, preserving anything already there.
+
+    A malformed ``config.json`` is never replaced silently: its bytes are copied
+    to ``config.json.corrupt-<stamp>`` first and the recovery is recorded in the
+    file, so a setup can still be undone by hand.
+    """
     root = Path(root)
     path = root / CONFIG_JSON
-    existing = read_json(path) if path.is_file() else {}
-    payload: dict = dict(existing)
-    payload["bottles"] = payload.get("bottles") if isinstance(payload.get("bottles"), list) else []
+    payload: dict = {}
+    problem = ""
+    if path.is_file():
+        payload, problem = read_config(path)
+    if problem:
+        backup = preserve_corrupt_config(path)
+        if backup is not None:
+            payload["recovered_from"] = str(backup)
+    payload["bottles"] = (
+        payload.get("bottles") if isinstance(payload.get("bottles"), list) else []
+    )
     settings = dict(payload.get("settings") or {})
-    for key, value in desktop_default_settings().items():
+    for key, value in desktop_default_settings(root).items():
         settings.setdefault(key, value)
     payload["settings"] = settings
     # Honest until an engine has actually been verified.
-    if not path.is_file():
-        payload["setup_complete"] = False
+    payload.setdefault("setup_complete", False)
     write_json_atomic(path, payload, indent=4)
     return path
 
 
 def finalize_config(root: Path) -> Path:
-    """Mark setup complete, keeping unknown keys byte-for-byte in meaning."""
+    """Mark setup complete, merging rather than replacing what is there.
+
+    Anything another writer changed while the engines were downloading survives:
+    every existing key keeps its value, and only ``setup_complete`` and missing
+    defaults are written.
+    """
     root = Path(root)
     path = root / CONFIG_JSON
-    payload = read_json(path) if path.is_file() else {}
+    payload, _problem = read_config(path)
     payload["setup_complete"] = True
-    payload["bottles"] = payload.get("bottles") if isinstance(payload.get("bottles"), list) else []
+    payload["bottles"] = (
+        payload.get("bottles") if isinstance(payload.get("bottles"), list) else []
+    )
     settings = dict(payload.get("settings") or {})
-    for key, value in desktop_default_settings().items():
+    for key, value in desktop_default_settings(root).items():
         settings.setdefault(key, value)
     payload["settings"] = settings
     write_json_atomic(path, payload, indent=4)
@@ -756,50 +974,427 @@ def ensure_bottles_file(root: Path) -> Path:
     return path
 
 
+# ---------------------------------------------------------------------------
+# Readiness, prerequisites and the setup lock
+# ---------------------------------------------------------------------------
+
+
+def inspect_installation(root: Path, versions: list[str] | None = None) -> dict:
+    """Read-only: is this data folder usable, and what is missing?
+
+    Folder existence and ``setup_complete`` alone are not proof. A truncated or
+    superseded archive passes both and still cannot create a bottle, so each
+    wanted engine is checked against its own required-file contract. Nothing is
+    created, written or downloaded here.
+    """
+    root = Path(root)
+    wanted = [resolve_version(value) for value in (versions or DEFAULT_SETUP_VERSIONS)]
+    report = {
+        "root": str(root),
+        "state": PRISTINE,
+        "reason": "no data folder yet",
+        "versions": wanted,
+        "missing_engines": [],
+        "damaged_engines": [],
+        "missing_dirs": [],
+        "config": {
+            "path": str(root / CONFIG_JSON),
+            "present": False,
+            "valid": False,
+            "setup_complete": False,
+        },
+        "engines": [],
+    }
+    if not root.is_dir():
+        return report
+
+    report["missing_dirs"] = [
+        name for name in LAYOUT_DIRS if not (root / name if name else root).is_dir()
+    ]
+    config_path = root / CONFIG_JSON
+    payload, problem = read_config(config_path)
+    report["config"].update(
+        present=config_path.is_file(),
+        valid=not problem,
+        setup_complete=bool(payload.get("setup_complete")),
+    )
+
+    engines = []
+    for version in wanted:
+        item = engine_report(root, version)
+        engines.append(item)
+        if not item["installed"]:
+            report["missing_engines"].append(version)
+        elif not item["healthy"]:
+            report["damaged_engines"].append(version)
+    report["engines"] = engines
+
+    if not config_path.is_file():
+        state, reason = PRISTINE, "config.json has not been written yet"
+    elif problem:
+        state, reason = REPAIRABLE, problem
+    elif not report["config"]["setup_complete"]:
+        state, reason = INCOMPLETE, "setup_complete is false"
+    elif report["damaged_engines"]:
+        state = REPAIRABLE
+        reason = "damaged engine archives: " + ", ".join(report["damaged_engines"])
+    elif report["missing_engines"]:
+        state = INCOMPLETE
+        reason = "missing engines: " + ", ".join(report["missing_engines"])
+    elif report["missing_dirs"]:
+        state = REPAIRABLE
+        reason = "missing folders: " + ", ".join(report["missing_dirs"][:4])
+    else:
+        state, reason = READY, ""
+    report["state"], report["reason"] = state, reason
+    return report
+
+
+def is_ready(root: Path, versions: list[str] | None = None) -> bool:
+    return inspect_installation(root, versions)["state"] == READY
+
+
+def needs_setup(root: Path) -> bool:
+    """Whether launching the CLI should install something by itself.
+
+    A folder that is complete but missing the Steam engine is not a reason to
+    start a 1.8 GB download behind the user's back: that is a Doctor warning and
+    a repair they can ask for with ``WehniX setup``. A missing folder, an
+    unreadable config, or ``setup_complete: false`` (an interrupted run) is.
+    """
+    report = inspect_installation(root)
+    if report["state"] == READY:
+        return False
+    if report["state"] == PRISTINE:
+        return True
+    config = report["config"]
+    return (not config["valid"]) or (not config["setup_complete"])
+
+
+def macos_version() -> tuple[int, ...]:
+    try:
+        import platform as _platform
+
+        raw = str(_platform.mac_ver()[0] or "")
+    except Exception:  # platform can be stubbed out in a frozen build
+        return ()
+    parts = [part for part in raw.split(".") if part.isdigit()]
+    return tuple(int(part) for part in parts[:2])
+
+
+def platform_problem(versions: list[str] | None = None) -> str:
+    """Why this machine cannot install these engines, before any download."""
+    import platform as _platform
+
+    if sys.platform != "darwin":
+        return (
+            "WehniX engines are macOS application bundles, so they cannot be "
+            f"installed on {sys.platform}."
+        )
+    wanted = [resolve_version(value) for value in (versions or DEFAULT_SETUP_VERSIONS)]
+    machine = _platform.machine().lower()
+    if contract.UNIVERSAL in wanted and machine not in ("arm64", "aarch64"):
+        return (
+            "The Universal engine is an Apple Silicon build; this Mac reports "
+            f"{machine or 'an unknown architecture'}."
+        )
+    current = macos_version()
+    if contract.UNIVERSAL in wanted and current and current < MIN_UNIVERSAL_MACOS:
+        shown = ".".join(str(part) for part in current)
+        return (
+            f"The Universal engine needs macOS {MIN_UNIVERSAL_MACOS[0]} or newer; "
+            f"this Mac runs {shown}."
+        )
+    return ""
+
+
+ROSETTA_PROBE = ("/usr/bin/arch", "-x86_64", "/usr/bin/true")
+
+
+def _probe_x86_64_translation() -> bool:
+    """The functional test the desktop uses; a marker directory proves nothing."""
+    try:
+        completed = subprocess.run(
+            list(ROSETTA_PROBE), capture_output=True, check=False, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def rosetta_status(probe: Callable[[], bool] | None = None) -> dict:
+    """Whether Rosetta 2 is needed and usable. Never installs anything."""
+    import platform as _platform
+
+    machine = _platform.machine().lower()
+    if machine not in ("arm64", "aarch64"):
+        return {
+            "needed": False,
+            "installed": True,
+            "machine": machine,
+            "message": "Rosetta 2 is not required on Intel.",
+        }
+    check = probe or _probe_x86_64_translation
+    try:
+        installed = bool(check())
+    except Exception:
+        installed = False
+    return {
+        "needed": True,
+        "installed": installed,
+        "machine": machine,
+        "message": (
+            "Rosetta 2 is installed."
+            if installed
+            else "Rosetta 2 is required to run Windows software on Apple Silicon."
+        ),
+    }
+
+
+def ensure_rosetta(progress: Progress | None = None) -> dict:
+    """Install Rosetta 2 when it is missing, then prove it works.
+
+    WehniX has no confirmation gate here: macOS may still ask for authorisation,
+    which is the one step this CLI cannot and must not bypass.
+    """
+    status = rosetta_status()
+    if not status["needed"] or status["installed"]:
+        return status
+    if progress is not None:
+        progress("Rosetta 2 is required; asking macOS to install it…", None)
+    try:
+        subprocess.run(
+            ["/usr/bin/softwareupdate", "--install-rosetta", "--agree-to-license"],
+            capture_output=True,
+            check=False,
+            timeout=1800,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    status = rosetta_status()
+    if not status["installed"]:
+        raise SetupError(
+            "Rosetta 2 is required to run Windows software on Apple Silicon and could "
+            "not be installed (macOS authorisation may have been cancelled). Run "
+            "`softwareupdate --install-rosetta --agree-to-license`, then launch WehniX "
+            "again."
+        )
+    return status
+
+
+@contextlib.contextmanager
+def setup_lock(root: Path):
+    """Process-safe ownership of one data folder's setup.
+
+    An in-memory flag cannot protect two CLI processes. The lock is advisory
+    ``flock`` on a file under ``cli/``: it is released automatically when the
+    holder exits, so a killed setup never leaves a stale lock behind.
+    """
+    path = Path(root) / "cli" / ".setup.lock"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a+", encoding="utf-8")
+    except OSError as exc:
+        raise SetupError(f"Could not open the setup lock {path}: {exc}") from exc
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except ImportError:  # pragma: no cover - macOS always has fcntl
+            pass
+        except OSError as exc:
+            raise SetupError(
+                f"Another WehniX setup is already running for {root}. Wait for it to "
+                "finish, or quit it, then launch WehniX again."
+            ) from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+        yield path
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        handle.close()
+
+
+def validate_installation(
+    root: Path,
+    versions: list[str] | None = None,
+    require_setup_complete: bool = False,
+) -> dict:
+    """The desktop's ``validate_external_directory``, for this folder."""
+    root = Path(root)
+    wanted = [resolve_version(value) for value in (versions or DEFAULT_SETUP_VERSIONS)]
+    checks: list[dict] = []
+
+    def record(name: str, ok: bool, detail: str = "") -> None:
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    for relative in LAYOUT_DIRS:
+        target = root / relative if relative else root
+        record(f"folder {relative or '.'}", target.is_dir(), str(target))
+
+    config_path = root / CONFIG_JSON
+    payload, problem = read_config(config_path)
+    record("config.json", config_path.is_file() and not problem, problem or str(config_path))
+    complete = bool(payload.get("setup_complete"))
+    record(
+        "setup_complete",
+        complete or not require_setup_complete,
+        "true" if complete else "false",
+    )
+    for version in wanted:
+        path = installed_zip(root, version)
+        try:
+            verify_zip(path, version)
+            record(label(version), True, str(path))
+        except SetupError as exc:
+            record(label(version), False, str(exc))
+
+    errors = [f"{item['name']}: {item['detail']}" for item in checks if not item["ok"]]
+    return {"ok": not errors, "checks": checks, "errors": errors, "root": str(root)}
+
+
+def _failure(
+    root: Path,
+    error: str,
+    engines: list[dict],
+    inspected: dict | None = None,
+    created: list[str] | None = None,
+    cancelled: bool = False,
+) -> dict:
+    done = [item["version"] for item in engines if item.get("version")]
+    return {
+        "success": False,
+        "error": error,
+        "root": str(root),
+        "created": created or [],
+        "engines": engines,
+        "setup_complete": False,
+        "cancelled": cancelled,
+        "completed": done,
+        "inspected": inspected or {},
+    }
+
+
+def _cancelled(root: Path, engines: list[dict], chosen: list[str], created: list[str]) -> dict:
+    """Say exactly what survived a cancel, instead of claiming nothing did."""
+    done = [item["version"] for item in engines if item.get("version")]
+    pending = [version for version in chosen if version not in done]
+    message = "Setup cancelled."
+    if done:
+        message += " Installed and kept: " + ", ".join(done) + "."
+    if pending:
+        message += " Not installed: " + ", ".join(pending) + "."
+    message += " setup_complete was not written."
+    result = _failure(root, message, engines, created=created, cancelled=True)
+    result["pending"] = pending
+    return result
+
+
 def setup(
     root: Path,
     versions: list[str] | None = None,
     progress: Progress | None = None,
     cancel: Callable[[], bool] | None = None,
+    force: bool = False,
 ) -> dict:
-    """First-run setup: directories, config, bottles.json, then engines.
+    """The one setup coordinator: automatic first run, ``setup`` and the TUI.
 
-    ``setup_complete`` is written only after every requested engine passes its
-    own verification, so an interrupted run is never reported as ready.
+    Returns immediately when the folder is already usable, so a second launch
+    never re-downloads or re-packs a healthy engine. Everything else runs under
+    the folder's setup lock, installs only what is missing or damaged, validates
+    and only then writes ``setup_complete``.
     """
     root = Path(root)
-    chosen = [resolve_version(value) for value in (versions or [contract.UNIVERSAL])]
+    chosen = [resolve_version(value) for value in (versions or DEFAULT_SETUP_VERSIONS)]
     chosen = list(dict.fromkeys(chosen))
+
+    inspected = inspect_installation(root, chosen)
+    if inspected["state"] == READY:
+        return {
+            "success": True,
+            "root": str(root),
+            "created": [],
+            "engines": inspected["engines"],
+            "setup_complete": True,
+            "already_set_up": True,
+            "inspected": inspected,
+        }
+
+    if not force:
+        problem = platform_problem(chosen)
+        if problem:
+            return _failure(root, problem, [], inspected)
+
+    try:
+        with setup_lock(root):
+            return _run_setup(root, chosen, progress, cancel)
+    except SetupError as exc:
+        return _failure(root, str(exc), [], inspected)
+
+
+def _run_setup(
+    root: Path,
+    chosen: list[str],
+    progress: Progress | None,
+    cancel: Callable[[], bool] | None,
+) -> dict:
     if progress is not None:
         progress("Preparing the WehniX data folder…", None)
     created = ensure_layout(root)
-    config_before = file_signature(root / CONFIG_JSON)
     initialize_config(root)
     ensure_bottles_file(root)
+
+    if cancel is not None and cancel():
+        return _cancelled(root, [], chosen, created)
+    ensure_rosetta(progress)
 
     results: list[dict] = []
     for version in chosen:
         if cancel is not None and cancel():
-            return {
-                "success": False,
-                "error": "Setup cancelled; setup_complete was not written.",
-                "created": created,
-                "engines": results,
-                "root": str(root),
-            }
+            return _cancelled(root, results, chosen, created)
+        existing = engine_report(root, version)
+        if existing["healthy"]:
+            if progress is not None:
+                progress(f"{label(version)} is already installed and verified.", None)
+            results.append(
+                {
+                    "version": version,
+                    "engine_zip": existing["path"],
+                    "bytes": existing["size"],
+                    "reused": True,
+                    "skipped": True,
+                    "healthy": True,
+                }
+            )
+            continue
+        if progress is not None:
+            progress(f"Installing {label(version)}…", None)
         try:
-            results.append(install(version, root, progress=progress, cancel=cancel))
+            results.append(
+                install(version, root, progress=progress, cancel=cancel)
+            )
         except SetupError as exc:
-            return {
-                "success": False,
-                "error": str(exc),
-                "created": created,
-                "engines": results,
-                "root": str(root),
-            }
+            if cancel is not None and cancel():
+                return _cancelled(root, results, chosen, created)
+            return _failure(root, str(exc), results, created=created)
 
-    if config_before is not None and file_signature(root / CONFIG_JSON) != config_before:
-        pass  # our own write above is expected; nothing else may have changed it
+    validation = validate_installation(root, chosen)
+    if not validation["ok"]:
+        joined = "; ".join(validation["errors"][:3])
+        return _failure(
+            root,
+            f"Setup could not validate the installation: {joined}",
+            results,
+            created=created,
+        )
     finalize_config(root)
     return {
         "success": True,
@@ -807,6 +1402,9 @@ def setup(
         "created": created,
         "engines": results,
         "setup_complete": True,
+        "installed": [item["version"] for item in results if not item.get("skipped")],
+        "reused": [item["version"] for item in results if item.get("skipped")],
+        "validated": validation,
     }
 
 

@@ -30,6 +30,7 @@ def test_first_run_launch_routes_to_setup_without_creating_the_folder(
     monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(root))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr("wehnix_cli.cli._interactive", lambda: True)
     calls: dict[str, object] = {"prepared": 0, "first_run": None}
 
     def note_prepare(*args, **kwargs):
@@ -310,3 +311,76 @@ def test_init_creates_the_folder_when_missing(tmp_path, monkeypatch, capsys):
 def test_version_command(capsys):
     assert cli.main(["version"]) == 0
     assert "Apache-2.0" in capsys.readouterr().out
+
+
+def test_plain_launch_without_a_terminal_sets_up_instead_of_drawing(
+    tmp_path, monkeypatch, capsys
+):
+    root = tmp_path / "WehniX"
+    monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(root))
+    monkeypatch.setattr("wehnix_cli.cli._interactive", lambda: False)
+    monkeypatch.setattr("wehnix_cli.cli.app_is_running", lambda: False)
+    called: dict[str, object] = {}
+
+    def fake_setup(path, versions=None, progress=None, cancel=None, force=False):
+        called["root"] = os.fspath(path)
+        return {"success": True, "engines": [], "root": str(path)}
+
+    def no_tui(*args, **kwargs):  # a non-interactive launch must not draw
+        raise AssertionError("the interface was started without a terminal")
+
+    monkeypatch.setattr("wehnix_cli.engine_setup.setup", fake_setup)
+    monkeypatch.setattr("wehnix_cli.tui.app.run", no_tui)
+
+    assert cli.main([]) == 0
+    assert called["root"] == str(root)
+    assert "Setup complete" in capsys.readouterr().out
+
+
+def test_setup_installs_both_active_engines_by_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(tmp_path / "WehniX"))
+    monkeypatch.setattr("wehnix_cli.cli.app_is_running", lambda: False)
+    seen: dict[str, list[str]] = {}
+
+    def fake_setup(root, versions, progress=None, cancel=None):
+        seen["versions"] = list(versions)
+        return {"success": True, "engines": [], "root": str(root)}
+
+    monkeypatch.setattr("wehnix_cli.engine_setup.setup", fake_setup)
+    assert cli.main(["setup", "--json"]) == 0
+    assert seen["versions"] == list(cli.engine_setup.DEFAULT_SETUP_VERSIONS)
+    assert seen["versions"] == [
+        cli.engine_setup.contract.UNIVERSAL,
+        cli.engine_setup.contract.STEAM,
+    ]
+
+
+def test_no_setup_never_installs_even_with_an_existing_folder(
+    state_dir, no_app, monkeypatch, capsys
+):
+    def refuse(*args, **kwargs):
+        raise AssertionError("--no-setup started the installer")
+
+    started: list[int] = []
+    monkeypatch.setattr("wehnix_cli.engine_setup.setup", refuse)
+    monkeypatch.setattr("wehnix_cli.cli._interactive", lambda: True)
+    monkeypatch.setattr("wehnix_cli.tui.app.run", lambda *a, **k: started.append(1))
+
+    assert cli.main(["--no-setup"]) == 0
+    assert started == [1]
+
+
+def test_a_plain_launch_does_not_set_up_a_finished_install(state_dir, no_app, monkeypatch):
+    monkeypatch.setattr("wehnix_cli.cli._interactive", lambda: True)
+    seen: dict[str, bool] = {}
+
+    class FakeApp:
+        def __init__(self, state_dir=None, first_run=False):
+            seen["first_run"] = first_run
+
+        def run(self) -> None:
+            return None
+
+    monkeypatch.setattr("wehnix_cli.tui.app.WehniXCLI", FakeApp)
+    assert cli.main([]) == 0
+    assert seen["first_run"] is False

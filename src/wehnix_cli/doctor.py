@@ -271,8 +271,8 @@ def _engine_checks(snapshot: Snapshot, ready: bool) -> list[Check]:
             bool(universal),
             f"{universal[0].size / GIB:.2f} GB · {universal[0].path}"
             if universal
-            else "not installed yet — `WehniX setup` installs it",
-            "Run `WehniX setup` — it downloads the pinned Universal archive.",
+            else "not installed yet — launching `WehniX` installs it",
+            "Launch `WehniX` again (it sets itself up) or run `WehniX setup`.",
             severity="warning",
         )
     )
@@ -289,7 +289,7 @@ def _engine_checks(snapshot: Snapshot, ready: bool) -> list[Check]:
             f"{steam[0].size / GIB:.2f} GB · {steam[0].path}"
             if steam
             else "not installed yet",
-            "Only needed for Steam bottles: `WehniX setup --engines universal,steam`.",
+            "Needed for Steam bottles: `WehniX setup --engines universal,steam`.",
             severity="warning",
         )
     )

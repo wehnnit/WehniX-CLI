@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import shutil
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -18,6 +19,13 @@ from pathlib import Path
 import pytest
 
 from wehnix_cli import cli, engine_setup
+
+# ``conftest.portable_setup`` neutralises the platform gate, Rosetta and free
+# space so an install can be tested anywhere. These are the real implementations,
+# kept for the tests that are about the gates themselves.
+REAL_PLATFORM_PROBLEM = engine_setup.platform_problem
+REAL_ROSETTA_STATUS = engine_setup.rosetta_status
+REAL_ENSURE_ROSETTA = engine_setup.ensure_rosetta
 
 # The exact published assets, independent of the module's own table, so a
 # drifted URL or digest fails here instead of at a user's first setup.
@@ -42,7 +50,12 @@ INCOMPATIBLE = "e8e77bd412f90482a4df72c89e7af1d4686c2c15aaf936a20133e43b0c6305f5
 
 
 def _is_directory(entry: str) -> bool:
-    return entry.endswith("drive_c") or entry.endswith("renderers/dxmt")
+    """Fixture directories: whatever the engine contract names with a slash."""
+    return (
+        entry.endswith("/")
+        or entry.endswith("drive_c")
+        or entry.endswith("renderers/dxmt")
+    )
 
 
 def build_archive(path: Path, version: str) -> Path:
@@ -125,9 +138,8 @@ def test_initial_config_matches_the_desktop_defaults(tmp_path):
     root = tmp_path / "WehniX"
     created = engine_setup.ensure_layout(root)
     assert str(root) in created
-    assert (root / "Engine").is_dir()
-    assert (root / "bottles").is_dir()
-    assert (root / "logs").is_dir()
+    for relative in engine_setup.LAYOUT_DIRS:
+        assert (root / relative if relative else root).is_dir()
 
     engine_setup.initialize_config(root)
     payload = json.loads((root / "config.json").read_text())
@@ -137,6 +149,9 @@ def test_initial_config_matches_the_desktop_defaults(tmp_path):
     assert payload["settings"]["engine_version"] == engine_setup.contract.UNIVERSAL
     assert payload["settings"]["bottle_engine_version"] == engine_setup.contract.UNIVERSAL
     assert payload["settings"]["auto_check_updates"] is True
+    assert payload["settings"]["install_extra_dependencies"] is True
+    assert payload["settings"]["bottle_location"] == str(root / "bottles")
+    assert payload["settings"]["update_manifest_url"] == engine_setup.DEFAULT_UPDATE_MANIFEST_URL
 
     engine_setup.finalize_config(root)
     assert json.loads((root / "config.json").read_text())["setup_complete"] is True
@@ -340,6 +355,15 @@ def test_read_commands_never_download(state_dir, no_app, monkeypatch, capsys):
     assert "Engine 11.17 Universal" in capsys.readouterr().out
 
 
+def test_the_https_context_always_verifies_certificates():
+    """A stock macOS Python has no CA bundle; the fix must not disable checks."""
+    import ssl
+
+    context = engine_setup.ssl_context()
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
 def test_progress_throttle_draws_a_readable_number_of_lines():
     now = [0.0]
     gate = engine_setup.ProgressThrottle(interval=0.25, step=1, clock=lambda: now[0])
@@ -440,3 +464,240 @@ def test_install_aliases_and_unknown_version(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("wehnix_cli.cli.app_is_running", lambda: False)
     assert cli.main(["engines", "install", "10.0"]) == 1
     assert "not an engine" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Automatic first run, readiness and recovery
+# ---------------------------------------------------------------------------
+
+
+def test_default_setup_installs_both_active_engines(tmp_path, fake_engine):
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        fake_engine(version)
+
+    root = tmp_path / "WehniX"
+    result = engine_setup.setup(root)
+
+    assert result["success"] is True
+    assert [item["version"] for item in result["engines"]] == list(
+        engine_setup.DEFAULT_SETUP_VERSIONS
+    )
+    assert result["setup_complete"] is True
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        assert engine_setup.installed_zip(root, version).is_file()
+
+
+def test_readiness_states(tmp_path, fake_engine):
+    root = tmp_path / "WehniX"
+    assert engine_setup.inspect_installation(root)["state"] == engine_setup.PRISTINE
+    assert engine_setup.needs_setup(root) is True
+
+    root.mkdir()
+    engine_setup.ensure_layout(root)
+    engine_setup.initialize_config(root)
+    incomplete = engine_setup.inspect_installation(root)
+    assert incomplete["state"] == engine_setup.INCOMPLETE
+    assert set(incomplete["missing_engines"]) == set(engine_setup.DEFAULT_SETUP_VERSIONS)
+
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        fake_engine(version)
+    assert engine_setup.setup(root)["success"] is True
+    assert engine_setup.inspect_installation(root)["state"] == engine_setup.READY
+    assert engine_setup.needs_setup(root) is False
+
+    installed = engine_setup.installed_zip(root, engine_setup.contract.UNIVERSAL)
+    with installed.open("wb") as handle:
+        handle.truncate(engine_setup.MIN_ENGINE_ZIP_BYTES - 1)
+    damaged = engine_setup.inspect_installation(root)
+    assert damaged["state"] == engine_setup.REPAIRABLE
+    assert engine_setup.contract.UNIVERSAL in damaged["damaged_engines"]
+
+
+def test_a_corrupt_config_is_a_repairable_state(tmp_path):
+    root = tmp_path / "WehniX"
+    root.mkdir()
+    engine_setup.ensure_layout(root)
+    (root / "config.json").write_text("{not json")
+    report = engine_setup.inspect_installation(root)
+    assert report["state"] == engine_setup.REPAIRABLE
+    assert "could not be read" in report["reason"]
+
+
+def test_corrupt_config_bytes_are_preserved_before_repair(tmp_path, fake_engine):
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        fake_engine(version)
+    root = tmp_path / "WehniX"
+    root.mkdir()
+    (root / "config.json").write_text("{not json")
+
+    assert engine_setup.setup(root)["success"] is True
+    backups = list(root.glob("config.json.corrupt-*"))
+    assert backups and backups[0].read_text() == "{not json"
+    payload = json.loads((root / "config.json").read_text())
+    assert payload["setup_complete"] is True
+    assert payload["recovered_from"] == str(backups[0])
+
+
+def test_a_second_launch_reuses_the_install_without_the_network(
+    tmp_path, fake_engine, monkeypatch
+):
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        fake_engine(version)
+    root = tmp_path / "WehniX"
+    assert engine_setup.setup(root)["success"] is True
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a finished install went back to the network")
+
+    monkeypatch.setattr(engine_setup.urllib.request, "urlopen", refuse)
+    second = engine_setup.setup(root)
+    assert second["success"] is True
+    assert second["already_set_up"] is True
+    assert second["created"] == []
+
+
+def test_an_interrupted_install_resumes_where_it_stopped(
+    tmp_path, fake_engine, monkeypatch
+):
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        fake_engine(version)
+    root = tmp_path / "WehniX"
+
+    real_install = engine_setup.install
+    attempts = {"steam": 0}
+
+    def flaky(version, path, progress=None, cancel=None):
+        if version == engine_setup.contract.STEAM and attempts["steam"] == 0:
+            attempts["steam"] += 1
+            raise engine_setup.SetupError("Could not download the Steam engine: offline")
+        return real_install(version, path, progress=progress, cancel=cancel)
+
+    monkeypatch.setattr(engine_setup, "install", flaky)
+    first = engine_setup.setup(root)
+    assert first["success"] is False
+    assert "offline" in first["error"]
+    assert engine_setup.installed_zip(root, engine_setup.contract.UNIVERSAL).is_file()
+    assert not engine_setup.installed_zip(root, engine_setup.contract.STEAM).exists()
+    assert json.loads((root / "config.json").read_text())["setup_complete"] is False
+    assert engine_setup.needs_setup(root) is True
+
+    second = engine_setup.setup(root)
+    assert second["success"] is True
+    assert second["reused"] == [engine_setup.contract.UNIVERSAL]
+    assert engine_setup.installed_zip(root, engine_setup.contract.STEAM).is_file()
+
+
+def test_cancelling_reports_what_was_kept(tmp_path, fake_engine, monkeypatch):
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        fake_engine(version)
+    root = tmp_path / "WehniX"
+    state = {"cancel": False}
+
+    real_install = engine_setup.install
+
+    def cancelling(version, path, progress=None, cancel=None):
+        result = real_install(version, path, progress=progress, cancel=cancel)
+        state["cancel"] = True
+        return result
+
+    monkeypatch.setattr(engine_setup, "install", cancelling)
+    result = engine_setup.setup(root, cancel=lambda: state["cancel"])
+
+    assert result["success"] is False
+    assert result["cancelled"] is True
+    assert "Installed and kept: 11.17-universal" in result["error"]
+    assert "Not installed: 11.17-steam" in result["error"]
+    assert json.loads((root / "config.json").read_text())["setup_complete"] is False
+
+
+def test_setup_takes_an_exclusive_lock(tmp_path, fake_engine):
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        fake_engine(version)
+    root = tmp_path / "WehniX"
+
+    with engine_setup.setup_lock(root):
+        blocked = engine_setup.setup(root)
+    assert blocked["success"] is False
+    assert "already running" in blocked["error"]
+
+    # The lock is released with the context, so the next launch can finish.
+    assert engine_setup.setup(root)["success"] is True
+
+
+def test_a_missing_engine_in_a_finished_install_is_a_repair_not_a_download(
+    tmp_path, fake_engine
+):
+    for version in engine_setup.DEFAULT_SETUP_VERSIONS:
+        fake_engine(version)
+    root = tmp_path / "WehniX"
+    assert engine_setup.setup(root)["success"] is True
+    engine_setup.installed_zip(root, engine_setup.contract.STEAM).unlink()
+
+    report = engine_setup.inspect_installation(root)
+    assert report["state"] == engine_setup.INCOMPLETE
+    assert engine_setup.needs_setup(root) is False
+
+
+def test_unusable_helper_interpreters_are_repointed(tmp_path):
+    app = tmp_path / "staging" / "WX-wine-11.17.app"
+    helper = app / "Contents" / "Resources" / "scripts" / "wx-helper.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("#!/Applications/WehniX.app/Contents/MacOS/python3\nprint('hi')\n")
+    helper.chmod(0o755)
+
+    assert engine_setup.patch_helper_interpreters(app) == [str(helper)]
+    text = helper.read_text()
+    assert text.startswith(f"#!{sys.executable}\n")
+    assert text.endswith("print('hi')\n")
+    assert helper.stat().st_mode & 0o111
+
+    # A helper whose interpreter already exists is left exactly as it was.
+    assert engine_setup.patch_helper_interpreters(app) == []
+
+
+def test_platform_gate_refuses_a_non_mac(monkeypatch):
+    monkeypatch.setattr(engine_setup, "platform_problem", REAL_PLATFORM_PROBLEM)
+    monkeypatch.setattr(engine_setup.sys, "platform", "linux")
+    problem = engine_setup.platform_problem([engine_setup.contract.UNIVERSAL])
+    assert "macOS" in problem
+
+
+def test_platform_gate_refuses_intel_for_universal(monkeypatch):
+    monkeypatch.setattr(engine_setup, "platform_problem", REAL_PLATFORM_PROBLEM)
+    monkeypatch.setattr(engine_setup.sys, "platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    problem = engine_setup.platform_problem([engine_setup.contract.UNIVERSAL])
+    assert "Apple Silicon" in problem
+    assert engine_setup.platform_problem([engine_setup.ELEVEN_ELEVEN]) == ""
+
+
+def test_rosetta_uses_a_functional_probe(monkeypatch):
+    monkeypatch.setattr(engine_setup, "rosetta_status", REAL_ROSETTA_STATUS)
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    assert engine_setup.rosetta_status(lambda: True)["installed"] is True
+    missing = engine_setup.rosetta_status(lambda: False)
+    assert missing["needed"] is True and missing["installed"] is False
+
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
+    intel = engine_setup.rosetta_status(lambda: False)
+    assert intel["needed"] is False and intel["installed"] is True
+
+
+def test_a_failed_rosetta_install_stops_before_the_download(monkeypatch):
+    monkeypatch.setattr(engine_setup, "ensure_rosetta", REAL_ENSURE_ROSETTA)
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.setattr(
+        engine_setup,
+        "rosetta_status",
+        lambda *a, **k: {
+            "needed": True,
+            "installed": False,
+            "machine": "arm64",
+            "message": "",
+        },
+    )
+    monkeypatch.setattr(engine_setup.subprocess, "run", lambda *a, **k: None)
+
+    with pytest.raises(engine_setup.SetupError) as info:
+        engine_setup.ensure_rosetta()
+    assert "Rosetta 2" in str(info.value)

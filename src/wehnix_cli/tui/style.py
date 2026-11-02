@@ -149,9 +149,10 @@ DataTable > .datatable--odd-row {{
     padding: 1 2;
     color: {MUTED};
 }}
-#view-setup Select {{
+#setup-engines {{
+    height: auto;
     margin: 0 2 1 2;
-    background: {PANEL_ALT};
+    color: {TEXT};
 }}
 #view-setup > Static {{
     padding-left: 2;

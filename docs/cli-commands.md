@@ -115,18 +115,28 @@ writes. Epic titles are the desktop app's domain and are not guessed at.
 WehniX [--state-dir PATH] [--no-setup]
 ```
 
-Opens the interface. If the data folder does not exist, it opens the first-run
-screen instead of an empty dashboard: choose the engines (`Universal` alone, or
-`Universal + Steam`) and press `enter` to install. Nothing is downloaded,
-created or written before that; `q` leaves the machine untouched.
+Opens the interface. If the data folder is missing, unreadable, or unfinished
+(`setup_complete: false`, which is what an interrupted run leaves behind), the
+first-run screen starts installing immediately — no Install button, no engine
+question, no confirmation. Opening the CLI *is* the confirmation. Progress, the
+engine in flight and a cancel hint are shown; `q` stops at a safe boundary and
+keeps whatever finished, `r` retries after a failure.
 
-`--no-setup` turns that off. With no data folder it prints the "no data yet"
-message and exits `2`, without opening the interface. It is for scripts and for
-anyone who wants the old behaviour.
+A folder that is complete but missing an engine (say Steam) is **not**
+re-downloaded on launch: Doctor reports it and `WehniX setup` repairs it, so a
+1.8 GB download never happens behind your back.
 
-The setup screen calls the same installer as `WehniX setup`, so the two can be
+With no terminal (piped, cron, a CI job) a plain `WehniX` runs the same setup in
+plain text and exits `0` or `1`; it never tries to draw the interface.
+
+`--no-setup` turns all of that off. With no data folder it prints the "no data
+yet" message and exits `2`, without opening the interface and without writing
+anything. It is for scripts and for anyone who wants the old behaviour.
+
+The setup screen calls the same `engine_setup.setup` coordinator as
+`WehniX setup` — same lock, same layout, same validation — so the two can be
 told apart only by what they draw. `--state-dir` and `WEHNIX_CLI_STATE_DIR`
-apply to first-run setup exactly as they do to everyday use — including in an
+apply to first-run setup exactly as they do to everyday use, including an
 alternate folder that does not exist yet.
 
 ### `WehniX setup`
@@ -137,15 +147,32 @@ WehniX setup [--engines universal,steam] [--engine universal|steam|11.11 ...]
 WehniX --no-setup     # no first-run offer; exit 2 when there is no data
 ```
 
-First-run setup. Creates `WehniX/`, `Engine/`, `bottles/`, `cli/` and `logs/`,
-writes a desktop-shaped `config.json` and an empty `bottles.json`, then installs
-the requested engine (Universal by default). `setup_complete` is set to `true`
-only after the engine has passed its required-file and zip checks; a failed or
-cancelled run leaves it `false` and installs no engine.
+First-run setup, and the same coordinator the interface uses. Creates the whole
+desktop layout (`Engine/`, `bottles/`, `Updates/`, `cli/`, `logs/`,
+`WehniX-Epic/**`, `WehniX-Steam/**`), writes the desktop's `config.json`
+defaults (`graphics_backend`, `bottle_location`, `engine_version`,
+`bottle_engine_version`, `update_manifest_url`, `auto_check_updates`,
+`install_extra_dependencies`) and an empty `bottles.json`, installs the missing
+engines, validates the result, and only then writes `setup_complete: true`.
 
-Engines are opt-in beyond Universal because both 11.17 archives together are
-about 1.8 GiB. `--engines universal,steam` (comma or space separated) and the
-repeatable `--engine steam` mean the same thing.
+A failed or cancelled run leaves `setup_complete: false`, keeps the engines that
+finished, and resumes from there on the next launch. A malformed `config.json`
+is copied to `config.json.corrupt-<stamp>` before a repaired one is written;
+unknown keys and existing bottle records are preserved.
+
+Both 11.17 engines are installed by default, matching the desktop's
+`ACTIVE_ENGINE_VERSIONS` and its own wizard: about 1.8 GiB together.
+`--engines universal` installs Universal alone (about 1 GB);
+`--engines universal,steam` (comma or space separated) and the repeatable
+`--engine steam` mean the same thing. 11.11 stays an explicit
+`engines install` for bottles you already have.
+
+Setup takes a per-folder lock (`cli/.setup.lock`, advisory `flock`, released
+automatically if the process dies), so two CLI processes cannot write the same
+folder at once, and it refuses while WehniX.app is open unless `--force` is
+passed. Before any download it checks the platform (macOS 14+ on Apple Silicon
+for Universal), Rosetta 2 (installing it when missing and re-probing), and free
+disk space.
 
 The archive is downloaded with `urllib` over HTTPS from the pinned WX-Wine
 release asset, hashed while it streams, and promoted from `.part` only when the
