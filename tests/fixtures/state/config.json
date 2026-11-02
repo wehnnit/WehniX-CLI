@@ -1,0 +1,10 @@
+{
+  "setup_complete": true,
+  "bottles": [],
+  "settings": {
+    "graphics_backend": "dxmt",
+    "engine_version": "11.17-universal",
+    "bottle_engine_version": "11.17-universal",
+    "auto_check_updates": true
+  }
+}

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wehnix-cli"
+version = "0.1.0"
+description = "A terminal client for WehniX — the same bottles, the same engines, no window."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "WEHNIT", url = "https://github.com/wehnnit" }]
+keywords = ["wehniX", "wine", "bottles", "macos", "tui", "cli"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Environment :: Console",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Topic :: Utilities",
+]
+dependencies = ["textual>=0.80", "rich>=13"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/wehnnit/WehniX-CLI"
+Issues = "https://github.com/wehnnit/WehniX-CLI/issues"
+
+[project.scripts]
+# Shell commands are case-sensitive, so every spelling someone is likely to
+# type gets an entry point. On the default macOS filesystem (case-insensitive)
+# one of these is enough; on a case-sensitive volume all of them exist.
+WehniX = "wehnix_cli.cli:main"
+wehniX = "wehnix_cli.cli:main"
+wehnix = "wehnix_cli.cli:main"
+Wehnix = "wehnix_cli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+wehnix_cli = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

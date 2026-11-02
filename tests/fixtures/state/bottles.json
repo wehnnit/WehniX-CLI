@@ -1,0 +1,36 @@
+{
+  "bottles": [
+    {
+      "name": "Main",
+      "id": "Main.app",
+      "path": "tests/fixtures/state/bottles/Main.app",
+      "engine_version": "11.17-universal",
+      "renderer": "dxmt",
+      "size": 1284000000
+    },
+    {
+      "name": "Steam",
+      "id": "Steam.app",
+      "path": "tests/fixtures/state/bottles/Steam.app",
+      "engine_version": "11.17-steam",
+      "renderer": "dxmt",
+      "size": 2910000000
+    },
+    {
+      "name": "Epic",
+      "id": "Epic.app",
+      "path": "tests/fixtures/state/bottles/Epic.app",
+      "engine_version": "11.17-universal",
+      "renderer": "d3dmetal",
+      "size": 1120000000
+    },
+    {
+      "name": "Legacy",
+      "id": "Legacy.app",
+      "path": "tests/fixtures/state/bottles/Legacy.app",
+      "engine_version": "11.11",
+      "renderer": "dxmt",
+      "size": 860000000
+    }
+  ]
+}
