@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from textual.widgets import ContentSwitcher, DataTable, Input
+from textual.widgets import ContentSwitcher, DataTable, Footer, Input
 
 from wehnix_cli.tui.app import BottlesView, WehniXCLI
 
@@ -66,5 +66,10 @@ def test_small_terminal_does_not_crash(state_dir, no_app):
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
             assert app.query_one("#view-bottles", BottlesView).size.width > 0
+
+            # The footer must stay one line at the narrowest supported width,
+            # and the status strip must not need horizontal scrolling.
+            assert app.query_one(Footer).size.height == 1
+            assert app.query_one("#status").size.width <= 80
 
     asyncio.run(scenario())
