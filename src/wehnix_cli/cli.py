@@ -216,6 +216,9 @@ def cmd_engines(args) -> int:
 def cmd_doctor(args) -> int:
     checks = run_checks()
     errors, warnings = summary(checks)
+    # A missing data folder is "no state yet" (2), not "the environment is
+    # broken" (1): the user has not run the app, which the hint says.
+    missing_state = not state_root().is_dir()
     if args.json:
         _print_json(
             {
@@ -233,7 +236,7 @@ def cmd_doctor(args) -> int:
                 ],
             }
         )
-        return EXIT_ERROR if errors else EXIT_OK
+        return EXIT_NO_DATA if missing_state else (EXIT_ERROR if errors else EXIT_OK)
 
     console = _console()
     console.print(f"[bold]WehniX CLI {__version__}[/] [dim]· doctor[/]\n")
@@ -252,7 +255,7 @@ def cmd_doctor(args) -> int:
         console.print(f"[red]{errors} error(s)[/], {warnings} warning(s)")
     else:
         console.print(f"[green]No errors[/] — {warnings} warning(s)")
-    return EXIT_ERROR if errors else EXIT_OK
+    return EXIT_NO_DATA if missing_state else (EXIT_ERROR if errors else EXIT_OK)
 
 
 def cmd_open(args) -> int:

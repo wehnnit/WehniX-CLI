@@ -10,7 +10,9 @@
 #
 set -euo pipefail
 
-REPO_URL="https://github.com/wehnnit/WehniX-CLI.git"
+# pip needs the git+ scheme for a repository URL; without it, it downloads the
+# HTML page and fails with "cannot detect archive format".
+REPO_URL="git+https://github.com/wehnnit/WehniX-CLI.git"
 BIN_DIR="${HOME}/.local/bin"
 VENV_DIR="${HOME}/.local/share/wehniX-cli"
 

@@ -78,6 +78,13 @@ async def render() -> None:
             await pilot.pause()
             OUTPUT.parent.mkdir(parents=True, exist_ok=True)
             app.save_screenshot(str(OUTPUT))
+            # The SVG exporter leaves trailing spaces on runs; `git log --check`
+            # rightly calls that a whitespace error.
+            text = OUTPUT.read_text(encoding="utf-8")
+            OUTPUT.write_text(
+                "\n".join(line.rstrip() for line in text.splitlines()) + "\n",
+                encoding="utf-8",
+            )
             print(f"wrote {OUTPUT}")
     finally:
         shutil.rmtree(state.parent, ignore_errors=True)

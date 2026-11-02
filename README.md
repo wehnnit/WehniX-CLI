@@ -7,7 +7,7 @@
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-000000?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d9cff?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3ddc97?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-57%20passing-3ddc97?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-59%20passing-3ddc97?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-ffb454?style=flat-square">
 </p>
 
@@ -175,7 +175,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                                  # 57 tests, no network, no real data
+pytest                                  # 59 tests, no network, no real data
 WEHNIX_CLI_STATE_DIR="$PWD/tests/fixtures/state" WehniX
 python scripts/make_screenshot.py       # regenerate docs/cli.svg
 ```

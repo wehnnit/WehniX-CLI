@@ -44,3 +44,7 @@ First public release.
 * Doctor checks grew from six to sixteen, and no longer treats a healthy
   0.92 GB Universal archive as "suspiciously small".
 * The TUI no longer reports a traceback when a worker fails; it shows a toast.
+* `scripts/install.sh` hands pip a `git+` URL, so a fresh install completes
+  instead of failing with "cannot detect archive format".
+* `doctor` exits `2` when the data folder does not exist yet, matching the
+  documented exit codes for every other command.

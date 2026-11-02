@@ -68,6 +68,19 @@ def test_missing_state_exits_two(tmp_path, monkeypatch, capsys):
     assert exit_info.value.code == 2
 
 
+def test_doctor_on_missing_state_exits_two(tmp_path, monkeypatch, capsys, no_app):
+    monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(tmp_path / "absent"))
+    assert cli.main(["doctor"]) == 2
+    assert "Data folder" in capsys.readouterr().out
+    assert cli.main(["doctor", "--json"]) == 2
+
+
+def test_state_dir_option_accepts_a_relative_path(state_dir, monkeypatch, capsys):
+    monkeypatch.chdir(state_dir.parent)
+    assert cli.main(["--state-dir", state_dir.name, "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["count"] == 4
+
+
 def test_settings_get_and_set(state_dir, no_app, capsys):
     assert cli.main(["settings", "get", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
