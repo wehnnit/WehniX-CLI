@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.3.1-7c5cff?style=flat-square"></a>
+  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.4.0-7c5cff?style=flat-square"></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-000000?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d9cff?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3ddc97?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-111%20passing-3ddc97?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-117%20passing-3ddc97?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-ffb454?style=flat-square">
 </p>
 
@@ -51,15 +51,19 @@ python3 -m pip install --user git+https://github.com/wehnnit/WehniX-CLI.git
 The command answers to `WehniX`, `wehniX`, `wehnix` and `Wehnix`; the installer
 creates every spelling the filesystem can tell apart.
 
-Requires macOS 13 or newer and Python 3.9+. If the desktop app has never run on
-this Mac, `WehniX setup` creates the same folder it would and installs the
-engine; if the app already set things up, the CLI simply reads what is there.
+Requires macOS 13 or newer and Python 3.9+. You do not need the desktop app
+first: run `WehniX` on a Mac with no data folder and it opens a first-run screen
+that offers to create the same folder the app uses and install the pinned
+engines. Nothing is downloaded and nothing is created until you choose
+**Install**. `WehniX setup` does the same without the interface, and
+`WehniX --no-setup` keeps the old behaviour of opening with no data at all.
 
 ## Quick start
 
 ```sh
-WehniX setup           # first run: data folder + the Universal engine
-WehniX                 # the interface
+WehniX                 # the interface; offers first-run setup if there is no data
+WehniX setup           # the same install without the interface (Universal)
+WehniX --no-setup      # open with no data and no setup offer
 WehniX list            # bottles, one line each
 WehniX list --json     # the same, for scripts
 WehniX doctor          # is this machine ready to run a bottle?
@@ -118,6 +122,9 @@ WehniX engines doctor              # per-engine path, size and health
 | `?` | the key list |
 | `q` | quit |
 
+On the first-run screen: `enter` or `i` starts the install, `c` prints the
+command-line equivalent, and `q` leaves without creating anything.
+
 Every action is also in the command palette, so nothing needs memorising.
 [`docs/cli-commands.md`](docs/cli-commands.md) lists every key and subcommand,
 including JSON shapes and exit codes.
@@ -144,8 +151,9 @@ The log follows on a timer only while the Logs section is open.
 **A Mac that has never run WehniX is not a broken Mac.** Doctor checks carry a
 `status`. When the data folder does not exist yet, that is the one failure, and
 `config.json`, the bottle checks, the engines and the logs are marked `skipped`
-instead of red; engines are installed by the app's setup, not by this CLI, and
-the hint says so. Skips are never counted as errors or warnings.
+instead of red; the hint names the next step, and `WehniX setup` or the first-run
+screen can install the engines without the desktop app. Skips are never counted
+as errors or warnings.
 
 **Writes are few, guarded, and reversible.**
 

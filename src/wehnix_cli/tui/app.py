@@ -7,6 +7,7 @@ state — runs in a worker so the interface never freezes while it waits.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from textual import on, work
@@ -28,7 +29,7 @@ from textual.widgets import (
     Static,
 )
 
-from .. import __version__
+from .. import __version__, engine_setup
 from ..actions import (
     ActionError,
     available_bottle_settings,
@@ -44,7 +45,7 @@ from ..actions import (
 from ..contract import SETTING_HELP, bottle_types_for_engine, engine_label
 from ..doctor import run_checks, summary
 from ..models import Bottle, EngineArtifact, compact_path, human_age, human_bytes, short_path
-from ..state import app_is_running, prepare_state_dir, read_snapshot
+from ..state import app_is_running, prepare_state_dir, read_snapshot, state_root
 from .style import ACCENT, BRAND, CSS, ERR, MUTED, OK, TEXT, WARN
 
 NAV = (
@@ -78,6 +79,59 @@ def _mark(ok: bool, severity: str = "error", status: str = "") -> str:
 # --------------------------------------------------------------------------
 # Views
 # --------------------------------------------------------------------------
+
+
+class SetupView(Vertical):
+    """First run: create the shared data folder and install an engine.
+
+    Nothing is downloaded and no folder is created until the user starts this,
+    and it calls ``engine_setup.setup`` — the same installer ``WehniX setup``
+    uses — rather than a second implementation.
+    """
+
+    # Universal is the recommended engine; the paired choice mirrors the
+    # desktop's ACTIVE_ENGINE_VERSIONS but stays an explicit selection here.
+    CHOICES = (
+        ("Universal only — about 1 GB", "universal"),
+        ("Universal + Steam — about 1.8 GB", "both"),
+    )
+
+    def compose(self) -> ComposeResult:
+        yield Static("Welcome to WehniX CLI", id="setup-heading")
+        yield Static("", id="setup-path")
+        yield Static(
+            f"[{MUTED}]There is no WehniX data folder on this Mac yet. Installing "
+            f"creates the same one the desktop app uses, then downloads the pinned "
+            f"engine archives. Nothing leaves this Mac except those downloads, and "
+            f"nothing happens until you choose Install.[/]",
+            id="setup-note",
+        )
+        yield Static(f"[{MUTED}]Engines to install[/]")
+        yield Select(list(self.CHOICES), value="both", allow_blank=False, id="setup-engines")
+        with Horizontal(id="setup-buttons"):
+            yield Button("Quit", id="setup-quit")
+            yield Button("Install", id="setup-start", variant="primary")
+        yield Static("", id="setup-progress")
+        yield Static("", id="setup-result")
+
+    def load(self, root: Path) -> None:
+        self.query_one("#setup-path", Static).update(f"[{MUTED}]data folder[/]  {root}")
+
+    def start(self) -> None:
+        self.query_one("#setup-start", Button).disabled = True
+        self.query_one("#setup-engines", Select).disabled = True
+        self.query_one("#setup-result", Static).update("")
+
+    def progress(self, message: str, percent: int | None = None) -> None:
+        suffix = "" if percent is None else f"  [{OK}]{percent}%[/]"
+        self.query_one("#setup-progress", Static).update(f"[{MUTED}]{message}[/]{suffix}")
+
+    def finish(self, ok: bool, message: str) -> None:
+        self.query_one("#setup-start", Button).disabled = ok
+        self.query_one("#setup-engines", Select).disabled = False
+        self.query_one("#setup-progress", Static).update("")
+        mark = f"[{OK}]✓[/]" if ok else f"[{ERR}]✗[/]"
+        self.query_one("#setup-result", Static).update(f"{mark} {message}")
 
 
 class BottlesView(Vertical):
@@ -795,7 +849,9 @@ class WehniXCLI(App):
         Binding("l", "launch", "Launch", show=False),
         Binding("o", "open_app", "App", show=False),
         Binding("ctrl+p", "command_palette", "Palette", show=False),
-        Binding("enter", "reveal", "Reveal", show=False),
+        Binding("enter", "enter", "Reveal", show=False),
+        Binding("i", "setup_start", "Install", show=False),
+        Binding("c", "setup_command", "Install command", show=False),
         Binding("escape", "escape", "Clear", show=False),
         Binding("1", "goto('bottles')", "Bottles", show=False),
         Binding("2", "goto('games')", "Games", show=False),
@@ -806,7 +862,7 @@ class WehniXCLI(App):
         Binding("7", "goto('storage')", "Storage", show=False),
     ]
 
-    def __init__(self, state_dir: Path | None = None) -> None:
+    def __init__(self, state_dir: Path | None = None, first_run: bool = False) -> None:
         super().__init__()
         self.snapshot = None
         self._current = "bottles"
@@ -814,6 +870,10 @@ class WehniXCLI(App):
         self._checks = []
         self._app_running = False
         self._settings_target: Bottle | None = None
+        self._first_run = first_run
+        self._setup_running = False
+        self._setup_done = False
+        self._setup_cancel = threading.Event()
         if state_dir is not None:
             import os
 
@@ -839,6 +899,7 @@ class WehniXCLI(App):
             with Vertical(id="main"):
                 yield Static("", id="title")
                 with ContentSwitcher(initial="view-bottles", id="content"):
+                    yield SetupView(id="view-setup")
                     yield BottlesView(id="view-bottles")
                     yield GamesView(id="view-games")
                     yield EngineView(id="view-engine")
@@ -856,6 +917,120 @@ class WehniXCLI(App):
         self.refresh_all()
         self.set_interval(REFRESH_SECONDS, self._auto_refresh)
         self.set_interval(TAIL_SECONDS, self._auto_tail)
+        if self._first_run and (self.snapshot is None or not self.snapshot.exists):
+            self._enter_setup()
+
+    # ------------------------------------------------------------ first run
+
+    def _enter_setup(self) -> None:
+        """Route a Mac with no data folder into setup, not an empty dashboard."""
+        self._current = "setup"
+        root = self.snapshot.root if self.snapshot is not None else state_root()
+        self.query_one("#view-setup", SetupView).load(root)
+        self.query_one("#content", ContentSwitcher).current = "view-setup"
+        self.query_one("#nav", ListView).disabled = True
+        self._paint_chrome()
+
+    def action_enter(self) -> None:
+        """Enter starts setup there, and reveals the selection everywhere else."""
+        if self._current == "setup":
+            self.action_setup_start()
+            return
+        self.action_reveal()
+
+    def action_setup_start(self) -> None:
+        if self._setup_running or self._setup_done:
+            return
+        if self._current != "setup":
+            return
+        if app_is_running():
+            self.notify("Quit WehniX first — it writes the same data folder.", severity="error")
+            return
+        selection = self.query_one("#setup-engines", Select).value
+        versions = [engine_setup.contract.UNIVERSAL]
+        if selection == "both":
+            versions.append(engine_setup.contract.STEAM)
+        root = self.snapshot.root if self.snapshot is not None else state_root()
+        problem = engine_setup.space_problem(root, len(versions))
+        if problem:
+            self.query_one("#view-setup", SetupView).finish(False, problem)
+            self.notify(problem, severity="error")
+            return
+        self._setup_running = True
+        self._setup_cancel = threading.Event()
+        self.query_one("#view-setup", SetupView).start()
+        self._run_setup(versions, root)
+
+    def action_setup_command(self) -> None:
+        if self._current != "setup":
+            return
+        self.notify(
+            "Without the interface: WehniX setup --engines universal,steam",
+            timeout=8,
+        )
+
+    @work(thread=True, exclusive=True)
+    def _run_setup(self, versions: list[str], root: Path) -> None:
+        """The installer runs off the UI thread, and can be cancelled."""
+        view = self.query_one("#view-setup", SetupView)
+
+        def progress(message: str, percent: int | None = None) -> None:
+            self.call_from_thread(view.progress, message, percent)
+
+        try:
+            result = engine_setup.setup(
+                root,
+                versions,
+                progress=progress,
+                cancel=self._setup_cancel.is_set,
+            )
+        except KeyboardInterrupt:
+            result = {
+                "success": False,
+                "error": "Setup cancelled. No engine was installed.",
+            }
+        except Exception as exc:  # a worker must never paint a traceback
+            result = {"success": False, "error": f"Setup stopped: {exc}"}
+        if result.get("success"):
+            self.call_from_thread(self._setup_finished, result)
+        else:
+            self.call_from_thread(
+                self._setup_failed,
+                str(result.get("error") or "Setup did not complete."),
+            )
+
+    def _setup_finished(self, result: dict) -> None:
+        self._setup_running = False
+        self._setup_done = True
+        self.query_one("#nav", ListView).disabled = False
+        self.query_one("#view-setup", SetupView).finish(
+            True, "Setup complete — the engines are installed. Press q to quit."
+        )
+        self.refresh_all()
+        installed = len(result.get("engines") or [])
+        self.notify(f"Setup complete — {installed} engine(s) installed")
+        self.action_goto("bottles")
+
+    def _setup_failed(self, message: str) -> None:
+        self._setup_running = False
+        self.query_one("#view-setup", SetupView).finish(False, message)
+        self.notify(message, severity="error")
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """While the first-run screen is up, only setup, help and quit exist."""
+        if self._current != "setup" or self._setup_done:
+            return True
+        if action in (
+            "quit",
+            "help",
+            "refresh",
+            "enter",
+            "setup_start",
+            "setup_command",
+            "command_palette",
+        ):
+            return True
+        return False
 
     # -------------------------------------------------------------- refresh
 
@@ -972,6 +1147,7 @@ class WehniXCLI(App):
         )
 
         titles = {
+            "setup": ("First run", "no WehniX data folder yet"),
             "bottles": (
                 "Bottles",
                 f"{len(snapshot.bottles)} total · {human_bytes(snapshot.total_bottle_bytes)}"
@@ -999,6 +1175,8 @@ class WehniXCLI(App):
 
     def action_goto(self, key: str) -> None:
         if key not in {nav_key for nav_key, _title, _glyph in NAV}:
+            return
+        if self._current == "setup" and not self._setup_done:
             return
         self._current = key
         self.query_one("#content", ContentSwitcher).current = f"view-{key}"
@@ -1245,7 +1423,13 @@ class WehniXCLI(App):
         view.update_detail(view.selected_bottle())
 
 
-def run(state_dir: Path | None = None) -> None:
-    """Create the state tree if needed, then hand over to the TUI."""
-    prepare_state_dir()
-    WehniXCLI(state_dir=state_dir).run()
+def run(state_dir: Path | None = None, first_run: bool = False) -> None:
+    """Hand over to the TUI.
+
+    An existing data folder is prepared lazily; a first run is not, so the
+    setup screen is the user's consent rather than a side effect of opening
+    the interface.
+    """
+    if not first_run:
+        prepare_state_dir()
+    WehniXCLI(state_dir=state_dir, first_run=first_run).run()

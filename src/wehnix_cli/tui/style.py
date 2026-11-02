@@ -135,6 +135,43 @@ DataTable > .datatable--odd-row {{
 #bottle-detail .val {{ color: {TEXT}; }}
 #bottle-detail .accent {{ color: {ACCENT_SOFT}; }}
 
+/* ----------------------------------------------------------------- setting */
+
+#setup-heading {{
+    height: 2;
+    padding: 1 2 0 2;
+    color: {TEXT};
+    text-style: bold;
+}}
+#setup-path {{ height: 1; padding: 0 2; color: {MUTED}; }}
+#setup-note {{
+    height: auto;
+    padding: 1 2;
+    color: {MUTED};
+}}
+#view-setup Select {{
+    margin: 0 2 1 2;
+    background: {PANEL_ALT};
+}}
+#view-setup > Static {{
+    padding-left: 2;
+}}
+#setup-buttons {{
+    height: auto;
+    padding: 0 2;
+}}
+#setup-buttons Button {{ margin-right: 1; min-width: 12; }}
+#setup-progress {{ height: 2; color: {MUTED}; }}
+#setup-result {{
+    height: auto;
+    margin: 1 2;
+    padding: 1 2;
+    background: {PANEL_ALT};
+    border: round {LINE};
+    color: {TEXT};
+}}
+#setup-result:empty {{ display: none; }}
+
 /* ------------------------------------------------------------------ doctor */
 
 #doctor-scroll {{ height: 1fr; padding: 0 1; }}

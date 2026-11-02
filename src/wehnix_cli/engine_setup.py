@@ -357,6 +357,36 @@ def free_bytes(path: Path) -> int:
         return 0
 
 
+# Copied from wehnix_app.py :: ensure_free_space, rounded for a folder that may
+# not exist yet: one 11.17 engine needs its archive, its extraction and its
+# installed zip at the same time.
+ESTIMATED_BYTES_PER_ENGINE = 3 * 1024**3
+
+
+def free_bytes_for(path: Path) -> int:
+    """Free space on the volume that would hold ``path``, absent path included."""
+    probe = Path(path)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    return free_bytes(probe)
+
+
+def space_problem(root: Path, count: int) -> str:
+    """The reason to refuse an install up front, or an empty string.
+
+    Checked before a first-run download starts, so a nearly full disk fails in
+    one line instead of a gigabyte into an archive it cannot unpack.
+    """
+    needed = max(1, int(count)) * ESTIMATED_BYTES_PER_ENGINE
+    available = free_bytes_for(root)
+    if available and available < needed:
+        return (
+            f"Not enough free disk space: {count} engine(s) need about "
+            f"{needed / 1024**3:.0f} GB but only {available / 1024**3:.0f} GB is free."
+        )
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Downloading
 # ---------------------------------------------------------------------------

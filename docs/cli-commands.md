@@ -109,11 +109,32 @@ WehniX games [--json]
 Steam games inside the bottles, read from the `appmanifest_*.acf` files Steam
 writes. Epic titles are the desktop app's domain and are not guessed at.
 
+### `WehniX` (no subcommand)
+
+```
+WehniX [--state-dir PATH] [--no-setup]
+```
+
+Opens the interface. If the data folder does not exist, it opens the first-run
+screen instead of an empty dashboard: choose the engines (`Universal` alone, or
+`Universal + Steam`) and press `enter` to install. Nothing is downloaded,
+created or written before that; `q` leaves the machine untouched.
+
+`--no-setup` turns that off. With no data folder it prints the "no data yet"
+message and exits `2`, without opening the interface. It is for scripts and for
+anyone who wants the old behaviour.
+
+The setup screen calls the same installer as `WehniX setup`, so the two can be
+told apart only by what they draw. `--state-dir` and `WEHNIX_CLI_STATE_DIR`
+apply to first-run setup exactly as they do to everyday use — including in an
+alternate folder that does not exist yet.
+
 ### `WehniX setup`
 
 ```
 WehniX setup [--engines universal,steam] [--engine universal|steam|11.11 ...]
              [--force] [--json]
+WehniX --no-setup     # no first-run offer; exit 2 when there is no data
 ```
 
 First-run setup. Creates `WehniX/`, `Engine/`, `bottles/`, `cli/` and `logs/`,

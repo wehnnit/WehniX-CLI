@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.0
+
+A Mac that has never run WehniX no longer needs the desktop app first.
+
+**Added**
+
+* `WehniX` with no data folder opens a first-run screen instead of an empty
+dashboard: choose `Universal` (about 1 GB) or `Universal + Steam` (about
+1.8 GB), press `enter`, and the same installer `WehniX setup` uses creates the
+shared folder and installs the pinned engines. `c` prints the command-line
+equivalent, `q` leaves without creating anything.
+* Setup runs in a cancellable worker with live stage and percent text, keeps the
+rest of the interface closed until it finishes, reloads the snapshot on
+success and offers a retry with the reason on failure.
+* A free-space check runs before the first download, so a nearly full disk is
+one line rather than a failed gigabyte.
+* `WehniX --no-setup` keeps the old behaviour: with no data folder it prints
+`No WehniX data yet` and exits `2`.
+
+**Changed**
+
+* Opening the interface no longer creates the data folder. Only the setup screen
+and `WehniX setup` do, and only after they are started.
+* Doctor and the interface no longer say engines can only come from the desktop
+app: `WehniX setup` and the first-run screen install them too.
+
 ## 0.3.1
 
 Setup is quieter, cancellable, and takes either engine spelling.

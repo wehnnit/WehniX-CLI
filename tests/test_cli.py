@@ -11,6 +11,46 @@ from wehnix_cli import cli
 from wehnix_cli.doctor import macos_version, rosetta_ok, run_checks, summary
 
 
+def test_no_setup_without_data_exits_two_and_creates_nothing(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "absent" / "WehniX"
+    monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(root))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+
+    assert cli.main(["--no-setup"]) == 2
+    out = capsys.readouterr().out
+    assert "No WehniX data yet" in out
+    assert not root.exists()
+
+
+def test_first_run_launch_routes_to_setup_without_creating_the_folder(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "absent" / "WehniX"
+    monkeypatch.setenv("WEHNIX_CLI_STATE_DIR", str(root))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir(parents=True, exist_ok=True)
+    calls: dict[str, object] = {"prepared": 0, "first_run": None}
+
+    def note_prepare(*args, **kwargs):
+        calls["prepared"] = int(calls["prepared"]) + 1
+
+    class FakeApp:
+        def __init__(self, state_dir=None, first_run=False):
+            calls["first_run"] = first_run
+
+        def run(self) -> None:
+            return None
+
+    monkeypatch.setattr("wehnix_cli.tui.app.prepare_state_dir", note_prepare)
+    monkeypatch.setattr("wehnix_cli.tui.app.WehniXCLI", FakeApp)
+
+    assert cli.main([]) == 0
+    assert calls["first_run"] is True
+    assert calls["prepared"] == 0, "first run must not create the data folder"
+    assert not root.exists()
+
+
 def test_doctor_runs_against_a_fixture_home(state_dir, no_app):
     checks = run_checks()
     names = [check.name for check in checks]

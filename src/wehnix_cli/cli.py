@@ -657,6 +657,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"override the data folder (default: {default_root()})",
     )
     parser.add_argument("--init", action="store_true", help="create the data folder and exit")
+    parser.add_argument(
+        "--no-setup",
+        action="store_true",
+        help="with no subcommand, do not offer first-run setup when there is no data folder",
+    )
 
     sub = parser.add_subparsers(dest="command")
 
@@ -761,6 +766,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if getattr(args, "command", None) is None:
         from .tui.app import run
+
+        # A missing data folder is a first run, not an empty dashboard. The
+        # interface offers setup there; nothing is downloaded and no folder is
+        # created until the user starts it. `--no-setup` keeps the old
+        # "no data yet" behaviour for scripts and for people who want it.
+        if not state_root().is_dir():
+            if getattr(args, "no_setup", False):
+                console = _console()
+                console.print(f"[bold]No WehniX data yet.[/] Looked in {state_root()}")
+                console.print(
+                    "Run `WehniX` and choose Install, or `WehniX setup` for the "
+                    "same install without the interface."
+                )
+                return EXIT_NO_DATA
+            run(first_run=True)
+            return EXIT_OK
 
         prepare_state_dir()
         run()

@@ -40,8 +40,9 @@ MIN_MACOS = (13, 0)
 MIN_FREE_GIB = 15
 
 SETUP_HINT = (
-    "Open WehniX.app once and finish its setup — the app creates this folder "
-    "and installs the engines. `WehniX --init` only adds terminal-only files."
+    "Run `WehniX` and choose Install on its first-run screen, or `WehniX setup` "
+    "— either creates this folder and installs the pinned engines. "
+    "`WehniX --init` only adds terminal-only files."
 )
 
 
@@ -246,9 +247,7 @@ def _state_checks(root: Path, exists: bool, ready: bool, snapshot: Snapshot) -> 
 # ---------------------------------------------------------------------------
 
 
-def _engine_checks(
-    snapshot: Snapshot, ready: bool, app_installed: bool
-) -> list[Check]:
+def _engine_checks(snapshot: Snapshot, ready: bool) -> list[Check]:
     names = (
         "Engine 11.17 Universal",
         "Engine 11.17 Steam",
@@ -273,9 +272,7 @@ def _engine_checks(
             f"{universal[0].size / GIB:.2f} GB · {universal[0].path}"
             if universal
             else "not installed yet — `WehniX setup` installs it",
-            "Open WehniX and finish setup — the app downloads it."
-            if app_installed
-            else "Install WehniX.app, then run its setup; the CLI cannot download engines.",
+            "Run `WehniX setup` — it downloads the pinned Universal archive.",
             severity="warning",
         )
     )
@@ -292,7 +289,7 @@ def _engine_checks(
             f"{steam[0].size / GIB:.2f} GB · {steam[0].path}"
             if steam
             else "not installed yet",
-            "Only needed for Steam bottles: WehniX setup --engine steam.",
+            "Only needed for Steam bottles: `WehniX setup --engines universal,steam`.",
             severity="warning",
         )
     )
@@ -415,8 +412,9 @@ def _app_checks(copies: list[Path]) -> list[Check]:
             "WehniX.app installed",
             bool(copies),
             ", ".join(str(path) for path in copies[:2]) or "not in Applications",
-            "Install WehniX.app in /Applications; its setup is what installs engines "
-            "and creates the data folder.",
+            "Install WehniX.app in /Applications for the window, updates, Epic and "
+            "Steam management. The CLI creates the data folder and installs engines "
+            "without it.",
             severity="warning",
         )
     ]
@@ -481,7 +479,7 @@ def run_checks() -> list[Check]:
     copies = _app_copies()
 
     checks.extend(_state_checks(root, exists, ready, snapshot))
-    checks.extend(_engine_checks(snapshot, ready, bool(copies)))
+    checks.extend(_engine_checks(snapshot, ready))
     checks.extend(_machine_checks(root if ready else Path.home()))
     checks.extend(_log_checks(root, ready, snapshot))
     checks.extend(_app_checks(copies))
