@@ -46,8 +46,9 @@ One line per bottle: name, engine, environment, renderer, size, last used.
       "path": "…/bottles/8f1c…",
       "app_path": "…/bottles/8f1c…/Main.app",
       "c_drive_path": "…/drive_c",
-      "engine": "11.17-universal",
-      "edition": "Universal",
+  "engine": "11.17-universal",
+  "runtime": "11.17-universal",
+  "edition": "Universal",
       "env_type": "game",
       "renderer": "dxmt",
       "program_path": "/nothing.exe",
@@ -56,8 +57,10 @@ One line per bottle: name, engine, environment, renderer, size, last used.
       "sync": "auto",
       "high_res": false,
       "size": 1284000000,
-      "last_used": 1767000000.0,
-      "in_registry": true
+  "last_used": 1767000000.0,
+  "in_registry": true,
+  "settings_source": "app",
+  "dxvk_available": true
     }
   ]
 }
@@ -123,6 +126,37 @@ disagree with:
 | `auto_check_updates` | `true`, `false` |
 
 If `config.json` changes while the command is running, the write is refused.
+`graphics_backend` is the app-wide default for new surfaces, not a bottle's
+renderer; the bottle's own renderer is set with `settings bottle` below.
+
+### `WehniX settings bottle <name>`
+
+```
+WehniX settings bottle Main [--json]
+WehniX settings bottle Main --renderer d3dmetal --sync msync --metal-hud on
+WehniX settings bottle Main --program "C:\Games\Game.exe" --flags "-windowed"
+```
+
+Reads the bottle's own engine files, not the registry: `wehnix.json` for
+11.17 Universal/Steam and for 11.11, `Info.plist` for GPTK and 11.0. Only the
+values that engine offers are accepted, and a refused value writes nothing.
+
+| Engine | Renderers | Sync | Metal HUD | High resolution | Program |
+| --- | --- | --- | --- | --- | --- |
+| 11.17 Universal | `dxmt`, `d3dmetal`, `dxvk` only if `renderers/dxvk/.wx-capability` says `renders=1` | `none`, `msync` | yes | no | editable; `wx-target` is written first |
+| 11.17 Steam | `dxmt`, `d3dmetal` | `none` | yes | no | locked — always launches Steam |
+| Game Porting Toolkit | `d3dmetal` | `default`, `esync`, `msync` | yes | yes | editable |
+| 11.11 / 11.0 | `dxmt` | `default`, `esync`, `msync` | yes | yes | editable |
+
+`--program` accepts a Windows path or a macOS path. A macOS path inside the
+bottle's C: drive becomes `C:\…`; anything else becomes `Z:\…`, the same
+mapping the app's file picker uses. There is no flag for a value the engine does
+not publish: the CLI offers only what the engine itself supports.
+
+The JSON output reports the engine, the normalised settings, every renderer
+with an `available` flag and a reason, the sync list, and whether the program is
+locked. A bottle with no readable engine file reports `source: default` and
+`error`, and the write is refused rather than guessed.
 
 ### `WehniX storage`
 
@@ -164,6 +198,7 @@ Prints `WehniX CLI <version> · Apache-2.0 · WEHNIT`.
 | `escape` | clear the filter |
 | `l` | launch the selected bottle |
 | `s` | bottle details |
+| `e` | edit bottle settings (only what the engine supports) |
 | `n` | new bottle |
 | `d` | delete the selected bottle (to the Trash, after confirmation) |
 | `t` | pause/follow the log (Logs section) |
@@ -178,7 +213,7 @@ Prints `WehniX CLI <version> · Apache-2.0 · WEHNIT`.
 
 | Section | Reads | Writes |
 | --- | --- | --- |
-| Bottles | `bottles.json`, `bottles/*/Contents/Info.plist` | create, delete (Trash) |
+| Bottles | `bottles.json`, `bottles/*/Contents/Resources/wehnix.json`, `bottles/*/Contents/Info.plist` | create, delete (Trash), bottle settings (`e`) |
 | Games | `steamapps/appmanifest_*.acf` | — |
 | Engines | `Engine/*.zip`, `*.tar.xz` | — |
 | Doctor | everything above, `sw_vers`, `arch`, `df` | — |
@@ -196,6 +231,9 @@ Prints `WehniX CLI <version> · Apache-2.0 · WEHNIT`.
 4. Archive members and symlink targets are validated before extraction; a
    traversal attempt aborts the whole operation.
 5. No command downloads anything, signs in anywhere, or starts Wine.
+6. A bottle setting is checked against the engine's own files before writing:
+   an unavailable renderer, sync mode, high-resolution flag or a locked program
+   is refused with the reason, and nothing is written.
 
 ## Uninstall
 

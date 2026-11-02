@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.0
+
+Per-bottle settings, read from the engine instead of the registry.
+
+**Added**
+
+* `e` opens a bottle settings editor: renderer, sync, Metal HUD, high
+  resolution, launch program and launch flags, with unsupported fields disabled
+  and the reason shown.
+* `WehniX settings bottle <name>` reads one bottle and accepts `--renderer`,
+  `--sync`, `--metal-hud on|off`, `--high-res on|off`, `--program` and
+  `--flags`, with the same engine checks as the interface.
+* Engine capability matrix ported from the desktop: Universal offers DXMT,
+  D3DMetal and capability-gated DXVK with `none`/`msync`; Steam offers
+  DXMT/D3DMetal with `none` only and a locked program; GPTK is D3DMetal with the
+  legacy sync set; 11.11/11.0 are DXMT-only. `high_res` is offered on GPTK and
+  legacy builds, never on 11.17.
+* `state.read_bottle_app_settings()` reads `wehnix.json` (Universal, Steam,
+  11.11) or `Info.plist` (GPTK, 11.0), including Universal's shared target via
+  the bundle's own `wx-target` tool — with a documented failure instead of a
+  traceback when the file or tool is missing.
+* `actions.set_bottle_setting()` validates every value before writing, writes
+  Universal's target before its JSON, keeps plist values as the integers the
+  app reads, and syncs the `bottles.json` record afterwards.
+* `--program` accepts a macOS path and maps it to `C:\…` or `Z:\…`.
+
+**Changed**
+
+* Scanning reads renderer, sync, Metal HUD, high resolution and the program from
+  the bottle's engine files first; a stale `bottles.json` value no longer
+  overrides what the bottle will actually launch with. The new `settings_source`
+  field reports `app`, `record`, `default` or `error`.
+* Bottle details (`s`) stay read-only and now point at `e`.
+
 ## 0.1.0
 
 First public release.

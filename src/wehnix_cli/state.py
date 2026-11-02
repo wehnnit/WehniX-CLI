@@ -160,16 +160,34 @@ def _derive_edition(info: dict, engine: str) -> str:
 
 
 def _bottle_from(entry: Path, record: dict, renderer: str) -> Bottle:
+    """One bottle, with its settings read from the engine first.
+
+    Copied from wehnix_app.py :: list_engine_bottles_from_disk: the registry is
+    a cache, so the bottle's own launch config / plist wins whenever it can be
+    read. Doc: bottles.json is only the fallback for a bundle that has no
+    readable settings file.
+    """
     app_path = find_bottle_app(entry)
     info = read_plist(app_path / "Contents" / "Info.plist") if app_path else {}
+    kind = runtime_kind(app_path)
 
     raw_engine = str(info.get("WehniXEngineVersion") or record.get("engine_version") or "").strip()
-    engine = contract.normalize_engine_version(raw_engine) if raw_engine else "unknown"
+    if kind:
+        engine = kind
+    elif raw_engine:
+        engine = contract.normalize_engine_version(raw_engine)
+    else:
+        engine = "unknown"
 
     raw_env = str(info.get("WehniXEnvType") or record.get("env_type") or "").strip()
+    if not raw_env and kind == contract.STEAM:
+        raw_env = "steam"
     env_type = contract.normalize_bottle_env_type(raw_env, engine) if (raw_env or engine != "unknown") else ""
 
     advanced = record.get("advanced") if isinstance(record.get("advanced"), dict) else {}
+    settings = read_bottle_app_settings(app_path) if app_path else {}
+    source = str(settings.get("source") or ("record" if record else "none"))
+    live = source == "app"
     try:
         modified = entry.stat().st_mtime
     except OSError:
@@ -183,15 +201,43 @@ def _bottle_from(entry: Path, record: dict, renderer: str) -> Bottle:
         engine=engine,
         edition=_derive_edition(info, engine),
         env_type=env_type,
-        renderer=str(record.get("renderer") or renderer or ""),
-        program_path=str(record.get("program_path") or ""),
-        program_flags=str(record.get("program_flags") or ""),
-        metal_hud=bool(record.get("metal_hud")),
-        sync=str(advanced.get("sync") or "auto"),
-        high_res=bool(advanced.get("high_res")),
+        renderer=(
+            str(settings.get("renderer") or "")
+            if live
+            else str(record.get("renderer") or renderer or "")
+        ),
+        program_path=(
+            str(settings.get("program_path") or "")
+            if live
+            else str(record.get("program_path") or "")
+        ),
+        program_flags=(
+            str(settings.get("program_flags") or "")
+            if live
+            else str(record.get("program_flags") or "")
+        ),
+        metal_hud=(
+            bool(settings.get("metal_hud"))
+            if live
+            else bool(record.get("metal_hud"))
+        ),
+        sync=(
+            str(settings.get("sync") or "auto")
+            if live
+            else str(advanced.get("sync") or "auto")
+        ),
+        high_res=(
+            bool(settings.get("high_res"))
+            if live
+            else bool(advanced.get("high_res"))
+        ),
         modified=modified,
         size=int(recorded_size) if isinstance(recorded_size, int) else None,
         in_registry=bool(record),
+        runtime=kind,
+        settings_source=source,
+        dxvk_available=settings.get("dxvk_available"),
+        settings_error=str(settings.get("error") or ""),
     )
 
 
@@ -490,3 +536,343 @@ def timestamp_for(path: Path) -> float:
         return path.stat().st_mtime
     except OSError:
         return time.time()
+
+
+# ---------------------------------------------------------------------------
+# Bottle settings: the files the engine actually launches from
+# ---------------------------------------------------------------------------
+# Copied from wehnix_app.py :: get_bottle_app_settings and the runtime table.
+# bottles.json is a cache; these files are the truth.
+
+UNIVERSAL_PREFIX = contract.UNIVERSAL_PREFIX
+LAUNCH_TOOL_TIMEOUT_SECONDS = 20
+
+
+def runtime_kind(app_path: Path | None) -> str:
+    """Identify the engine from the bundle layout.
+
+    Copied from wehnix_app.py :: is_wehnix_11_17_universal_runtime,
+    is_wehnix_11_17_steam_runtime, is_wehnix_11_11_runtime and is_gptk_runtime:
+    the 11.11 tree is checked before 11.17 so a bundle carrying both is not
+    misread, and a display label is never consulted.
+    """
+    if app_path is None:
+        return ""
+    app_path = Path(app_path)
+    resources = app_path / "Contents" / "Resources"
+    if (app_path / ".gptk-engine").exists():
+        return contract.GPTK
+    if (resources / "engine" / "wine" / "tools" / "wine" / "wine").is_file():
+        return "11.11"
+    if not (resources / "wine" / "bin" / "wine").is_file():
+        return _legacy_runtime(app_path)
+    template = resources / "prefix-template" / "drive_c"
+    shipped = resources / "state" / "prefixes" / UNIVERSAL_PREFIX / "drive_c"
+    if (resources / "UNIVERSAL.md").is_file():
+        return contract.UNIVERSAL
+    if template.is_dir():
+        return contract.STEAM
+    if shipped.is_dir() or (resources / "scripts" / "wx-launch-profile.sh").is_file():
+        return contract.UNIVERSAL
+    return contract.STEAM
+
+
+def _legacy_runtime(app_path: Path) -> str:
+    info = read_plist(app_path / "Contents" / "Info.plist")
+    raw = str(info.get("WehniXEngineVersion") or "").strip().lower()
+    if raw in ("11.0", "11.11", "gptk"):
+        return raw
+    # A stripped bundle can still name its engine in the plist even when its
+    # payload is unreadable; that is enough to read the right settings file.
+    if raw in (contract.UNIVERSAL, "universal"):
+        return contract.UNIVERSAL
+    if raw in (contract.STEAM, "11.17", "steam"):
+        return contract.STEAM
+    if (app_path / "Contents" / "MacOS" / "wehnix-engine-launch").is_file():
+        return "11.0"
+    return ""
+
+
+def launch_config_path(app_path: Path, runtime: str | None = None) -> Path:
+    """Copied from wehnix_app.py :: _wehnix_11_17_config_path / 11_11."""
+    app_path = Path(app_path)
+    runtime = runtime or runtime_kind(app_path)
+    resources = app_path / "Contents" / "Resources"
+    if runtime == "11.11":
+        return resources / "engine" / "wehnix.json"
+    return resources / "wehnix.json"
+
+
+def default_launch_config() -> dict:
+    """Copied from wehnix_app.py :: _default_wehnix_11_launch_config."""
+    return {
+        "launch": {"exePath": "nothing.exe", "arguments": []},
+        "renderer": {"active": "dxmt", "enabled": True},
+        "graphics": {"metalHud": False, "retina": False},
+        "sync": {"mode": "default"},
+    }
+
+
+def read_launch_config(app_path: Path, runtime: str | None = None) -> dict:
+    """Defaults filled in, so a partial file still yields a complete config."""
+    config = default_launch_config()
+    loaded = read_json(launch_config_path(app_path, runtime))
+    for block, defaults in config.items():
+        value = loaded.get(block)
+        if isinstance(value, dict):
+            defaults.update(value)
+    for key, value in loaded.items():
+        if key not in config:
+            config[key] = value
+    return config
+
+
+def universal_prefix_name(app_path: Path) -> str:
+    """The prefix this Universal build launches, if it kept one."""
+    shipped = Path(app_path) / "Contents" / "Resources" / "state" / "prefixes"
+    if (shipped / UNIVERSAL_PREFIX / "drive_c").is_dir():
+        return UNIVERSAL_PREFIX
+    try:
+        candidates = sorted(p.name for p in shipped.iterdir() if (p / "drive_c").is_dir())
+    except OSError:
+        candidates = []
+    return candidates[0] if candidates else UNIVERSAL_PREFIX
+
+
+def launch_environment(app_path: Path) -> dict:
+    """The environment the 11.17 scripts expect, minus anything host-Python.
+
+    Copied from wehnix_app.py :: wx_11_17_launch_env. Never raises.
+    """
+    app_path = Path(app_path)
+    resources = app_path / "Contents" / "Resources"
+    prefix_name = universal_prefix_name(app_path)
+    prefix = resources / "state" / "prefixes" / prefix_name
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP")
+    }
+    env["WX_BUNDLE_ROOT"] = str(resources)
+    env["WX_LAUNCHER_PREFIX"] = prefix_name
+    env["WINEPREFIX"] = str(prefix)
+    env["WX_WINE_HOME"] = str(resources / "wine")
+    env["WX_WINE_VIEW"] = str(resources / "wine")
+    icd = resources / "wine" / "share" / "vulkan" / "icd.d" / "MoltenVK_icd.json"
+    if icd.is_file():
+        env["VK_ICD_FILENAMES"] = str(icd)
+        env["VK_DRIVER_FILES"] = str(icd)
+    entries = [str(resources / "wine" / "bin"), str(resources / "bin")]
+    existing = [part for part in env.get("PATH", "").split(os.pathsep) if part]
+    env["PATH"] = os.pathsep.join(entries + [part for part in existing if part not in entries])
+    return env
+
+
+def universal_shared_target(app_path: Path) -> dict:
+    """Read Universal's shared target through its own tool.
+
+    Copied from wehnix_app.py :: universal_shared_target. A missing tool is a
+    readable failure, not an exception: the caller falls back to the JSON.
+    """
+    app_path = Path(app_path)
+    tool = app_path / "Contents" / "Resources" / "bin" / "wx-target"
+    if not tool.is_file():
+        return {
+            "success": False,
+            "target": "",
+            "error": "bin/wx-target is missing from this Universal build.",
+        }
+    command = ["/bin/bash", str(tool), "get", "--prefix", universal_prefix_name(app_path)]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(app_path),
+            env=launch_environment(app_path),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=LAUNCH_TOOL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"success": False, "target": "", "error": f"wx-target could not run: {exc}"}
+    target = (completed.stdout or "").strip()
+    if completed.returncode != 0:
+        detail = (completed.stderr or "").strip() or f"exit {completed.returncode}"
+        return {"success": False, "target": target, "error": f"wx-target get failed: {detail}"}
+    return {"success": True, "target": target, "error": ""}
+
+
+def set_universal_shared_target(app_path: Path, target: str) -> dict:
+    """Write Universal's shared target. The desktop does this before exePath."""
+    app_path = Path(app_path)
+    tool = app_path / "Contents" / "Resources" / "bin" / "wx-target"
+    if not tool.is_file():
+        return {
+            "success": False,
+            "error": "bin/wx-target is missing, so the shared target cannot be set.",
+        }
+    # Copied from wehnix_app.py :: set_universal_shared_target: an empty choice
+    # means the engine's bundled no-op, and WX_TARGET must never be blank.
+    value = str(target or "").strip() or "nothing.exe"
+    command = [
+        "/bin/bash",
+        str(tool),
+        "set",
+        value,
+        "--prefix",
+        universal_prefix_name(app_path),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(app_path),
+            env=launch_environment(app_path),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=LAUNCH_TOOL_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"success": False, "error": f"wx-target could not run: {exc}"}
+    if completed.returncode != 0:
+        detail = (completed.stderr or "").strip() or f"exit {completed.returncode}"
+        return {"success": False, "error": f"wx-target set failed: {detail}"}
+    return {"success": True, "error": ""}
+
+
+def _plist_renderer(plist: dict, runtime: str) -> str:
+    """Copied from wehnix_app.py :: get_renderer_from_plist."""
+    # Desktop order: DXMT first, then DXVK, then D3DMetal.
+    for name, key in (("dxmt", "DXMT"), ("dxvk", "DXVK"), ("d3dmetal", "D3DMETAL")):
+        try:
+            enabled = int(plist.get(key) or 0) == 1
+        except (TypeError, ValueError):
+            enabled = str(plist.get(key) or "").strip() == "1"
+        if enabled:
+            return contract.normalize_bottle_renderer(name, runtime)
+    return contract.normalize_bottle_renderer("", runtime)
+
+
+def _plist_sync(plist: dict) -> str:
+    if str(plist.get("WINEMSYNC") or "").strip() == "1":
+        return "msync"
+    if str(plist.get("WINEESYNC") or "").strip() == "1":
+        return "esync"
+    return "default"
+
+
+def windows_program_path(app_path: Path, selected: str) -> str:
+    """Map a macOS path onto the bottle's C: drive, or Z: when it is outside.
+
+    Copied from wehnix_app.py :: mac_exe_path_to_windows_path. A path that is
+    already a Windows path is returned untouched.
+    """
+    text = str(selected or "").strip()
+    if not text or not text.startswith("/"):
+        return text
+    app_path = Path(app_path)
+    resources = app_path / "Contents" / "Resources"
+    candidates = [
+        resources / "state" / "prefixes" / universal_prefix_name(app_path) / "drive_c",
+        resources / "prefix-template" / "drive_c",
+        resources / "engine" / "drive_c",
+    ]
+    c_drive = next((path for path in candidates if path.is_dir()), candidates[0])
+    try:
+        relative = Path(text).expanduser().resolve().relative_to(c_drive.resolve())
+    except (ValueError, OSError):
+        return "Z:\\" + "\\".join(part for part in text.split("/") if part)
+    return "C:\\" + "\\".join(relative.parts)
+
+
+def read_bottle_app_settings(app_path: Path | None) -> dict:
+    """Everything one bottle's engine files say about how it launches.
+
+    Read-only and exception-free: the UI runs this inside a worker, and a
+    malformed config must become a readable ``error`` with safe defaults.
+    """
+    result = {
+        "runtime": "",
+        "renderer": "dxmt",
+        "program_path": "",
+        "program_flags": "",
+        "metal_hud": False,
+        "sync": "default",
+        "high_res": False,
+        "dxvk_available": False,
+        "source": "none",
+        "error": "",
+    }
+    if app_path is None:
+        result["error"] = "This bottle has no app bundle to read."
+        return result
+    app_path = Path(app_path)
+    runtime = runtime_kind(app_path)
+    result["runtime"] = runtime
+    if not runtime:
+        result["source"] = "error"
+        result["error"] = "Could not identify the engine inside this bundle."
+        return result
+
+    capabilities = contract.bottle_capabilities(runtime, app_path)
+    result["dxvk_available"] = bool(capabilities["renderers"]["dxvk"]["available"])
+    try:
+        if runtime in (contract.UNIVERSAL, contract.STEAM, "11.11"):
+            path = launch_config_path(app_path, runtime)
+            if not path.is_file():
+                result["source"] = "default"
+                return result
+            config = read_launch_config(app_path, runtime)
+            launch = config.get("launch") if isinstance(config.get("launch"), dict) else {}
+            renderer = config.get("renderer") if isinstance(config.get("renderer"), dict) else {}
+            graphics = config.get("graphics") if isinstance(config.get("graphics"), dict) else {}
+            sync = config.get("sync") if isinstance(config.get("sync"), dict) else {}
+            arguments = launch.get("arguments")
+            if not isinstance(arguments, list):
+                arguments = []
+            result.update(
+                {
+                    "renderer": contract.normalize_bottle_renderer(
+                        renderer.get("active"), runtime
+                    ),
+                    "program_path": str(launch.get("exePath") or "").strip(),
+                    "program_flags": " ".join(str(item) for item in arguments if str(item)),
+                    "metal_hud": bool(graphics.get("metalHud")),
+                    "sync": contract.normalize_bottle_sync(sync.get("mode"), runtime),
+                    "high_res": bool(graphics.get("retina")) if runtime == "11.11" else False,
+                    "source": "app",
+                }
+            )
+            if runtime == contract.UNIVERSAL:
+                shared = universal_shared_target(app_path)
+                if shared["success"] and shared["target"]:
+                    result["program_path"] = shared["target"]
+                elif shared["error"]:
+                    result["error"] = shared["error"]
+            return result
+
+        plist = read_plist(app_path / "Contents" / "Info.plist")
+        if not plist:
+            result["source"] = "default"
+            result["renderer"] = contract.normalize_bottle_renderer("", runtime)
+            return result
+        result.update(
+            {
+                "renderer": _plist_renderer(plist, runtime),
+                "program_path": str(plist.get("Program Name and Path") or "").strip(),
+                "program_flags": str(plist.get("Program Flags") or "").strip(),
+                "metal_hud": str(plist.get("METAL_HUD") or "").strip() == "1",
+                "sync": _plist_sync(plist),
+                "high_res": str(plist.get("RetinaMode") or "").strip() == "1",
+                "source": "app",
+            }
+        )
+        return result
+    except Exception as exc:  # a broken file must not become a traceback
+        result["source"] = "error"
+        result["error"] = f"Could not read this bottle's settings: {exc}"
+        return result

@@ -266,6 +266,183 @@ def record_for_bottle(
     }
 
 
+# ─── Per-bottle capabilities ────────────────────────────────────────────────
+# Copied from wehnix_app.py :: environment_capabilities and the four
+# ``*_capabilities`` helpers. A renderer is offered only when the engine's own
+# payload backs it; the display label never decides what a bottle can run.
+
+UNIVERSAL_PREFIX = "universal-main"
+
+# Copied from wehnix_app.py :: UNIVERSAL_SYNC_MODES and friends.
+SYNC_MODES: dict[str, tuple[str, ...]] = {
+    UNIVERSAL: ("none", "msync"),
+    STEAM: ("none",),
+    GPTK: ("default", "esync", "msync"),
+    "11.11": ("default", "esync", "msync"),
+    "11.0": ("default", "esync", "msync"),
+}
+
+RENDERER_LABELS = {
+    "dxmt": "DXMT",
+    "d3dmetal": "D3DMetal",
+    "dxvk": "DXVK",
+}
+
+
+def normalize_runtime(value: object) -> str:
+    """Map a detected runtime id or engine version onto one capability set."""
+    text = str(value or "").strip()
+    if text in (UNIVERSAL, STEAM, GPTK, "11.11", "11.0"):
+        return text
+    return normalize_engine_version(text)
+
+
+def universal_dxvk_available(app_path: Path | None) -> bool:
+    """Copied from wehnix_app.py :: wehnix_11_17_universal_dxvk_capability."""
+    if app_path is None:
+        return False
+    marker = (
+        Path(app_path)
+        / "Contents"
+        / "Resources"
+        / "renderers"
+        / "dxvk"
+        / ".wx-capability"
+    )
+    try:
+        text = marker.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(line.strip() == "renders=1" for line in text.splitlines())
+
+
+def universal_d3dmetal_available(app_path: Path | None) -> bool:
+    """Copied from wehnix_app.py :: universal_d3dmetal_payload."""
+    if app_path is None:
+        return False
+    return (
+        Path(app_path)
+        / "Contents"
+        / "Resources"
+        / "renderers"
+        / "d3dmetal"
+        / "external"
+        / "libd3dshared.dylib"
+    ).is_file()
+
+
+def bottle_capabilities(engine: object | None, app_path: Path | None = None) -> dict:
+    """What this bottle may change, derived from the engine and its payload.
+
+    Mirrors the desktop matrix: Universal is DXMT/D3DMetal plus capability-gated
+    DXVK with none/msync; Steam is DXMT/D3DMetal with no sync choice; GPTK is
+    D3DMetal with the legacy sync set; 11.11/11.0 are DXMT-only.
+    """
+    runtime = normalize_runtime(engine)
+    if runtime == UNIVERSAL:
+        d3dmetal = universal_d3dmetal_available(app_path)
+        dxvk = universal_dxvk_available(app_path)
+        renderers = {
+            "dxmt": {
+                "available": True,
+                "reason": "The DXMT bridge ships with every Universal build.",
+            },
+            "d3dmetal": {
+                "available": d3dmetal,
+                "reason": (
+                    "renderers/d3dmetal/external/libd3dshared.dylib is present."
+                    if d3dmetal
+                    else "renderers/d3dmetal payload is missing from this build."
+                ),
+            },
+            "dxvk": {
+                "available": dxvk,
+                "reason": (
+                    "renderers/dxvk/.wx-capability reports renders=1."
+                    if dxvk
+                    else "renderers/dxvk/.wx-capability is missing or does not report renders=1."
+                ),
+            },
+        }
+        return {
+            "runtime": runtime,
+            "renderers": renderers,
+            "sync_modes": SYNC_MODES[UNIVERSAL],
+            "metal_hud": True,
+            "high_res": False,
+            "program_locked": False,
+            "note": "Universal runs the program you choose through its own target.",
+        }
+    if runtime == STEAM:
+        return {
+            "runtime": runtime,
+            "renderers": {
+                "dxmt": {"available": True, "reason": "DXMT is the Steam edition default."},
+                "d3dmetal": {"available": True, "reason": "D3DMetal ships with the Steam edition."},
+                "dxvk": {
+                    "available": False,
+                    "reason": "The Steam edition has no DXVK payload; Universal carries it.",
+                },
+            },
+            "sync_modes": SYNC_MODES[STEAM],
+            "metal_hud": True,
+            "high_res": False,
+            "program_locked": False,
+            "note": "Steam bottles always launch Steam; sync is fixed to none.",
+        }
+    if runtime == GPTK:
+        return {
+            "runtime": runtime,
+            "renderers": {
+                "dxmt": {"available": False, "reason": "Game Porting Toolkit renders through D3DMetal."},
+                "d3dmetal": {"available": True, "reason": "D3DMetal is the GPTK renderer."},
+                "dxvk": {"available": False, "reason": "Game Porting Toolkit has no DXVK payload."},
+            },
+            "sync_modes": SYNC_MODES[GPTK],
+            "metal_hud": True,
+            "high_res": True,
+            "program_locked": False,
+            "note": "Game Porting Toolkit is an Epic option in the app.",
+        }
+    legacy = runtime if runtime in ("11.11", "11.0") else "11.11"
+    return {
+        "runtime": legacy,
+        "renderers": {
+            "dxmt": {"available": True, "reason": f"WehniX Engine {legacy} renders through DXMT."},
+            "d3dmetal": {"available": False, "reason": f"WehniX Engine {legacy} has no D3DMetal payload."},
+            "dxvk": {"available": False, "reason": f"WehniX Engine {legacy} has no DXVK payload."},
+        },
+        "sync_modes": SYNC_MODES[legacy],
+        "metal_hud": True,
+        "high_res": True,
+        "program_locked": False,
+        "note": "Kept for bottles you already have.",
+    }
+
+
+def normalize_bottle_renderer(value: object, engine: object | None) -> str:
+    """Copied from the desktop's three renderer normalizers, by runtime."""
+    runtime = normalize_runtime(engine)
+    text = str(value or "").strip().lower()
+    if runtime == UNIVERSAL:
+        return text if text in ("dxmt", "d3dmetal", "dxvk") else "dxmt"
+    if runtime == STEAM:
+        return text if text in ("dxmt", "d3dmetal") else "dxmt"
+    if runtime == GPTK:
+        return "d3dmetal"
+    return "dxmt"
+
+
+def normalize_bottle_sync(value: object, engine: object | None) -> str:
+    """Normalise a stored sync mode; writing uses the capability list."""
+    runtime = normalize_runtime(engine)
+    modes = SYNC_MODES.get(runtime, SYNC_MODES["11.0"])
+    text = str(value or "").strip().lower()
+    if text in modes:
+        return text
+    return modes[0]
+
+
 def validate_setting(key: str, value: object) -> object:
     """Reject a config write the desktop would not understand.
 

@@ -223,6 +223,17 @@ ModalScreen {{
     align-horizontal: right;
     padding-top: 1;
 }}
+#dialog.settings-dialog {{
+    width: 76;
+    max-height: 92%;
+}}
+#settings-form {{
+    height: auto;
+    max-height: 18;
+}}
+#settings-form Select {{
+    margin-bottom: 1;
+}}
 #dialog-buttons Button {{
     margin-left: 1;
     min-width: 12;

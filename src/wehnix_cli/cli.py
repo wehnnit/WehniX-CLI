@@ -14,7 +14,14 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .actions import ActionError, reveal, set_setting, tail_log
+from .actions import (
+    ActionError,
+    available_bottle_settings,
+    reveal,
+    set_bottle_setting,
+    set_setting,
+    tail_log,
+)
 from .contract import SAFE_SETTINGS, SETTING_HELP
 from .doctor import run_checks, summary
 from .models import Bottle, human_age, human_bytes
@@ -54,6 +61,10 @@ def _bottle_payload(bottle: Bottle) -> dict:
         "size": bottle.size,
         "last_used": bottle.modified,
         "in_registry": bottle.in_registry,
+        "runtime": bottle.runtime,
+        "settings_source": bottle.settings_source,
+        "dxvk_available": bottle.dxvk_available,
+        "settings_error": bottle.settings_error,
     }
 
 
@@ -324,6 +335,101 @@ def cmd_settings(args) -> int:
     return EXIT_OK
 
 
+def cmd_bottle_settings(args) -> int:
+    """Read one bottle's engine settings, and change only what it supports."""
+    snapshot = _require_state(args)
+    bottle = _find_bottle(snapshot, args.name)
+    if bottle is None:
+        console = _console()
+        console.print(f"No bottle called {args.name!r}.")
+        if snapshot.bottles:
+            console.print("Known bottles: " + ", ".join(b.name for b in snapshot.bottles))
+        return EXIT_ERROR
+
+    changes: dict[str, object] = {}
+    if args.renderer:
+        changes["renderer"] = args.renderer
+    if args.sync:
+        changes["sync"] = args.sync
+    if args.metal_hud:
+        changes["metal_hud"] = args.metal_hud
+    if args.high_res:
+        changes["high_res"] = args.high_res
+    if args.program is not None:
+        changes["program_path"] = args.program
+    if args.program_flags is not None:
+        changes["program_flags"] = args.program_flags
+
+    try:
+        options = available_bottle_settings(bottle)
+        for key, value in changes.items():
+            options = set_bottle_setting(bottle, key, value)
+    except ActionError as exc:
+        _console().print(f"[red]{exc}[/]")
+        return EXIT_ERROR
+
+    current = options["current"]
+    payload = {
+        "bottle": bottle.name,
+        "engine": options["engine"],
+        "runtime": options["runtime"],
+        "settings": {
+            "renderer": current.get("renderer"),
+            "sync": current.get("sync"),
+            "metal_hud": current.get("metal_hud"),
+            "high_res": current.get("high_res"),
+            "program_path": current.get("program_path"),
+            "program_flags": current.get("program_flags"),
+            "source": current.get("source"),
+            "error": current.get("error"),
+        },
+        "available": {
+            "renderers": options["renderers"],
+            "sync_modes": list(options["sync_modes"]),
+            "metal_hud": options["metal_hud"],
+            "high_res": options["high_res"],
+            "program_locked": options["program_locked"],
+            "program_reason": options["program_reason"],
+        },
+        "updated": sorted(changes),
+    }
+    if args.json:
+        _print_json(payload)
+        return EXIT_OK
+
+    console = _console()
+    console.print(f"[bold]{bottle.name}[/] [dim]· {options['engine']} · {options['runtime']}[/]\n")
+    console.print(f"  renderer       [bold]{current.get('renderer') or '—'}[/]")
+    console.print(f"  sync           [bold]{current.get('sync') or '—'}[/]")
+    console.print(f"  metal hud      [bold]{'on' if current.get('metal_hud') else 'off'}[/]")
+    console.print(f"  high res       [bold]{'on' if current.get('high_res') else 'off'}[/]")
+    console.print(f"  program        {current.get('program_path') or '—'}")
+    console.print(f"  flags          {current.get('program_flags') or '—'}")
+    if current.get("source") != "app":
+        console.print(
+            f"  [dim]settings source: {current.get('source')} "
+            f"(no engine config read; showing the registry[/])"
+        )
+    if current.get("error"):
+        console.print(f"  [yellow]{current['error']}[/]")
+    renderers = ", ".join(
+        f"{name}{'' if item['available'] else ' (unavailable)'}"
+        for name, item in options["renderers"].items()
+    )
+    console.print(f"\n[dim]renderers:[/] {renderers}")
+    console.print(f"[dim]sync:[/] {', '.join(options['sync_modes'])}")
+    console.print(
+        f"[dim]high resolution:[/] {'supported' if options['high_res'] else 'not on this engine'}"
+    )
+    if options["program_locked"]:
+        console.print(f"[dim]{options['program_reason']}[/]")
+    console.print(
+        f"\n[dim]Change with: WehniX settings bottle {bottle.name!r} "
+        "--renderer dxmt --sync msync[/]"
+    )
+    return EXIT_OK
+
+
 def cmd_storage(args) -> int:
     snapshot = _require_state(args)
     sized = _snapshot(with_sizes=True)
@@ -437,6 +543,19 @@ def build_parser() -> argparse.ArgumentParser:
     settings_set.add_argument("key")
     settings_set.add_argument("value")
     settings_set.set_defaults(func=cmd_settings, action="set")
+
+    settings_bottle = settings_sub.add_parser(
+        "bottle", help="read or change one bottle's engine settings"
+    )
+    settings_bottle.add_argument("name")
+    settings_bottle.add_argument("--renderer", help="dxmt, d3dmetal, or dxvk where supported")
+    settings_bottle.add_argument("--sync", help="none, msync, default or esync, per engine")
+    settings_bottle.add_argument("--metal-hud", choices=("on", "off"))
+    settings_bottle.add_argument("--high-res", choices=("on", "off"))
+    settings_bottle.add_argument("--program", help="program path inside the bottle")
+    settings_bottle.add_argument("--flags", dest="program_flags", help="launch arguments")
+    settings_bottle.add_argument("--json", action="store_true")
+    settings_bottle.set_defaults(func=cmd_bottle_settings, action="bottle")
 
     storage = sub.add_parser("storage", help="show what the data folder uses")
     storage.add_argument("--json", action="store_true")

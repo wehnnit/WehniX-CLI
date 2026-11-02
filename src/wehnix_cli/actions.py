@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shlex
 import shutil
 import stat
 import subprocess
@@ -24,11 +25,16 @@ from .state import (
     app_is_running,
     file_signature,
     iso_now,
+    launch_config_path,
+    windows_program_path,
     load_records,
     move_to_trash,
+    read_bottle_app_settings,
     read_json,
+    read_launch_config,
     read_plist,
     save_records,
+    set_universal_shared_target,
     state_root,
     write_json_atomic,
 )
@@ -522,3 +528,264 @@ def tail_log(path: Path, lines: int = 200) -> list[str]:
             return handle.readlines()[-max(1, lines):]
     except OSError:
         return []
+
+
+# ---------------------------------------------------------------------------
+# Per-bottle settings
+# ---------------------------------------------------------------------------
+# Copied from wehnix_app.py :: get_bottle_app_settings /
+# update_bottle_app_settings. ``config.json``'s ``graphics_backend`` is the app
+# default for new surfaces; it is never treated as a bottle's renderer here.
+
+BOTTLE_SETTING_KEYS = (
+    "renderer",
+    "sync",
+    "metal_hud",
+    "high_res",
+    "program_path",
+    "program_flags",
+)
+
+
+def available_bottle_settings(bottle: Bottle) -> dict:
+    """What the selected bottle may change, plus what it currently says.
+
+    CPU-only: reads files, never writes. A bottle without a readable bundle
+    still returns its capabilities so the UI can explain the refusal.
+    """
+    runtime = bottle.runtime or bottle.engine
+    capabilities = contract.bottle_capabilities(runtime, bottle.app_path)
+    current = read_bottle_app_settings(bottle.app_path)
+    locked = str(bottle.env_type or "").strip().lower() == "steam"
+    capabilities["program_locked"] = locked
+    capabilities["program_reason"] = (
+        "Steam bottles always launch Steam, so the program cannot be changed."
+        if locked
+        else ""
+    )
+    capabilities["engine"] = bottle.engine
+    capabilities["current"] = current
+    return capabilities
+
+
+def _setting_flag(value: object, label: str) -> bool:
+    text = str(value).strip().lower()
+    if text in ("1", "true", "on", "yes"):
+        return True
+    if text in ("0", "false", "off", "no"):
+        return False
+    raise ActionError(f"{label} expects on or off, not {value!r}.")
+
+
+def _block(config: dict, key: str) -> dict:
+    value = config.get(key)
+    if not isinstance(value, dict):
+        value = {}
+        config[key] = value
+    return value
+
+
+def _write_launch_config(app_path: Path, runtime: str, updates: dict) -> None:
+    """Write Universal/Steam/11.11 settings to their own wehnix.json."""
+    config = read_launch_config(app_path, runtime)
+    if "renderer" in updates:
+        renderer = _block(config, "renderer")
+        renderer["active"] = updates["renderer"]
+        renderer["enabled"] = True
+    if "sync" in updates:
+        _block(config, "sync")["mode"] = updates["sync"]
+    graphics = _block(config, "graphics")
+    if "metal_hud" in updates:
+        graphics["metalHud"] = bool(updates["metal_hud"])
+    if "high_res" in updates:
+        if runtime == "11.11":
+            graphics["retina"] = bool(updates["high_res"])
+        else:
+            graphics.pop("retina", None)
+    if runtime != "11.11":
+        # 11.17 has no high-resolution switch; never leave a stale key behind.
+        graphics.pop("retina", None)
+    launch = _block(config, "launch")
+    if "program_path" in updates:
+        launch["exePath"] = updates["program_path"] or "nothing.exe"
+    if "program_flags" in updates:
+        raw = str(updates["program_flags"] or "").strip()
+        # posix=False keeps Windows backslashes in a quoted argument, exactly
+        # like wehnix_app.py :: update_bottle_app_settings.
+        try:
+            launch["arguments"] = shlex.split(raw, posix=False) if raw else []
+        except ValueError:
+            launch["arguments"] = raw.split() if raw else []
+    write_json_atomic(launch_config_path(app_path, runtime), config)
+
+
+def _write_plist(path: Path, plist: dict) -> None:
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with temp.open("wb") as handle:
+        plistlib.dump(plist, handle)
+        handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except OSError:
+            pass
+    os.replace(temp, path)
+
+
+def _write_plist_settings(app_path: Path, updates: dict) -> None:
+    """Write GPTK/11.0 settings to the bundle's Info.plist.
+
+    Copied from wehnix_app.py :: set_renderer_in_plist and its sync, Metal HUD,
+    high-resolution and program writers.
+    """
+    path = app_path / "Contents" / "Info.plist"
+    plist = read_plist(path)
+    if not plist:
+        raise ActionError(
+            f"{path} is missing or unreadable, so this bottle's settings cannot be changed."
+        )
+    # Copied from wehnix_app.py :: set_renderer_in_plist and its siblings: the
+    # desktop writes integers, and its reader treats any non-zero value as on.
+    # Strings here would make "0" truthy in the app.
+    if "renderer" in updates:
+        keys = {
+            "dxmt": "DXMT",
+            "dxvk": "DXVK",
+            "d3dmetal": "D3DMETAL",
+            "d9vk": "D9VK",
+            "cnc-ddraw": "CNC_DDRAW",
+        }
+        for key in keys.values():
+            plist[key] = 0
+        plist[keys[updates["renderer"]]] = 1
+    if "sync" in updates:
+        plist["WINEESYNC"] = 1 if updates["sync"] == "esync" else 0
+        plist["WINEMSYNC"] = 1 if updates["sync"] == "msync" else 0
+    if "metal_hud" in updates:
+        plist["METAL_HUD"] = 1 if updates["metal_hud"] else 0
+    if "high_res" in updates:
+        plist["RetinaMode"] = 1 if updates["high_res"] else 0
+    if "program_path" in updates:
+        plist["Program Name and Path"] = updates["program_path"] or "/nothing.exe"
+    if "program_flags" in updates:
+        plist["Program Flags"] = str(updates["program_flags"] or "")
+    _write_plist(path, plist)
+
+
+def _record_matches(record: dict, bottle: Bottle) -> bool:
+    for key in ("unique_id", "id"):
+        value = str(record.get(key) or "").strip()
+        if value and value in (bottle.unique_id, bottle.path.name):
+            return True
+    for key in ("path", "app_path"):
+        value = str(record.get(key) or "").strip()
+        if not value:
+            continue
+        recorded = Path(value)
+        if recorded == bottle.path or (bottle.app_path and recorded == bottle.app_path):
+            return True
+        if recorded.name == bottle.path.name:
+            return True
+    return False
+
+
+def _sync_record(bottle: Bottle, updates: dict, root: Path) -> None:
+    """Update the cached record after the app file was written successfully."""
+    records = load_records(root)
+    changed = False
+    for record in records:
+        if not _record_matches(record, bottle):
+            continue
+        if "renderer" in updates:
+            record["renderer"] = updates["renderer"]
+        if "program_path" in updates:
+            record["program_path"] = updates["program_path"] or "nothing.exe"
+        if "program_flags" in updates:
+            record["program_flags"] = str(updates["program_flags"] or "")
+        if "metal_hud" in updates:
+            record["metal_hud"] = bool(updates["metal_hud"])
+        advanced = record.get("advanced")
+        if not isinstance(advanced, dict):
+            advanced = {}
+            record["advanced"] = advanced
+        if "sync" in updates:
+            advanced["sync"] = updates["sync"]
+        if "high_res" in updates:
+            advanced["high_res"] = bool(updates["high_res"])
+        changed = True
+    if changed:
+        save_records(records, root)
+
+
+def set_bottle_setting(
+    bottle: Bottle,
+    key: str,
+    value: object,
+    root: Path | None = None,
+) -> dict:
+    """Change one per-bottle setting after checking the engine allows it.
+
+    Every check runs before a single byte is written, so a refused change leaves
+    the bottle exactly as it was. Universal's shared target is written through
+    ``wx-target`` first, matching the desktop's order.
+    """
+    if key not in BOTTLE_SETTING_KEYS:
+        raise ActionError(f"{key} is not a bottle setting this CLI can change.")
+    if app_is_running():
+        raise ActionError("Quit WehniX first — it rewrites bottle settings while it runs.")
+    if bottle.app_path is None or not Path(bottle.app_path).is_dir():
+        raise ActionError(f"{bottle.name} has no app bundle on disk to change.")
+
+    root = Path(root) if root is not None else state_root()
+    options = available_bottle_settings(bottle)
+    runtime = options["runtime"]
+    label = contract.engine_label(bottle.engine)
+    updates: dict = {}
+
+    if key == "renderer":
+        choice = str(value or "").strip().lower()
+        detail = options["renderers"].get(choice)
+        if detail is None:
+            offered = ", ".join(name for name, item in options["renderers"].items() if item["available"])
+            raise ActionError(f"{label} does not offer {choice or 'that renderer'}. Choose: {offered}.")
+        if not detail["available"]:
+            raise ActionError(detail["reason"])
+        updates["renderer"] = choice
+    elif key == "sync":
+        choice = str(value or "").strip().lower()
+        if choice not in options["sync_modes"]:
+            if runtime == contract.UNIVERSAL and choice == "esync":
+                raise ActionError(
+                    "Universal cannot run esync sync; it offers none or msync."
+                )
+            offered = ", ".join(options["sync_modes"])
+            raise ActionError(f"{label} sync modes are {offered}; {choice or 'that'} is not one.")
+        updates["sync"] = choice
+    elif key in ("metal_hud", "high_res"):
+        flag = _setting_flag(value, key.replace("_", " "))
+        if key == "high_res" and not options["high_res"]:
+            raise ActionError(f"{label} does not support high resolution.")
+        if key == "metal_hud" and not options["metal_hud"]:
+            raise ActionError(f"{label} does not support the Metal HUD.")
+        updates[key] = flag
+    else:
+        if options["program_locked"]:
+            raise ActionError(options["program_reason"] or "This bottle's program is locked.")
+        if key == "program_path":
+            # Accept a Finder-style path and store the Windows path the engine
+            # launches, the same mapping the desktop's file picker applies.
+            updates[key] = windows_program_path(bottle.app_path, str(value or ""))
+        else:
+            updates[key] = str(value or "")
+
+    if key == "program_path" and runtime == contract.UNIVERSAL:
+        shared = set_universal_shared_target(bottle.app_path, updates["program_path"])
+        if not shared["success"]:
+            raise ActionError(shared["error"] or "Universal refused the new target.")
+
+    if runtime in (contract.UNIVERSAL, contract.STEAM, "11.11"):
+        _write_launch_config(bottle.app_path, runtime, updates)
+    else:
+        _write_plist_settings(bottle.app_path, updates)
+
+    _sync_record(bottle, updates, root)
+    return available_bottle_settings(bottle)

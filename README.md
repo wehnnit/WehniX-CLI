@@ -3,11 +3,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.1.0-7c5cff?style=flat-square"></a>
+  <a href="https://github.com/wehnnit/WehniX-CLI/releases"><img alt="version" src="https://img.shields.io/badge/version-0.2.0-7c5cff?style=flat-square"></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%2013%2B-000000?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-6d9cff?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-3ddc97?style=flat-square">
-  <img alt="tests" src="https://img.shields.io/badge/tests-65%20passing-3ddc97?style=flat-square">
+  <img alt="tests" src="https://img.shields.io/badge/tests-82%20passing-3ddc97?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-ffb454?style=flat-square">
 </p>
 
@@ -72,7 +72,8 @@ WehniX logs -n 50      # the tail of wehniX.log
 | `enter` | reveal the selection in Finder |
 | `/` | filter bottles by name, engine or renderer (`escape` clears) |
 | `l` | launch the selected bottle |
-| `s` | bottle details, read from the bottle's own plist |
+| `s` | bottle details, read from the bottle's own engine files |
+| `e` | edit that bottle: renderer, sync, Metal HUD, high resolution, program |
 | `n` | new bottle from an installed engine |
 | `d` | delete a bottle — it moves to the Trash |
 | `t` | pause or follow the log |
@@ -96,7 +97,9 @@ shapes the desktop writes:
 | --- | --- |
 | `config.json` | reads `settings.engine_version`, `graphics_backend`, `auto_check_updates`; can change only those three |
 | `bottles.json` | reads records keyed by `unique_id`, `id`, `path` or bundle name — all four spellings the two front ends have used |
-| `bottles/<unique_id>/<Name>.app` | reads `Info.plist` for the engine version, edition and environment type |
+| `bottles/<unique_id>/<Name>.app/Contents/Resources/wehnix.json` | Universal and Steam 11.17 launch settings: renderer, sync, Metal HUD, program, arguments |
+| `.../Contents/Resources/engine/wehnix.json` | the same launch settings for 11.11 bottles |
+| `bottles/<unique_id>/<Name>.app/Contents/Info.plist` | GPTK and 11.0 settings, plus the engine version, edition and environment type |
 | `Engine/*.zip` | identifies the build by name and reports whether it can create bottles |
 | `logs/wehniX.log` | tails it, no parsing of private data |
 
@@ -115,6 +118,14 @@ The log follows on a timer only while the Logs section is open.
   passes verification.
 * `d` moves the bottle to the Trash and drops exactly its record. Names,
   records and files belonging to other bottles stay byte-identical.
+* `e` writes the selected bottle's own engine file — `wehnix.json` for
+  11.17/11.11, `Info.plist` for GPTK/11.0 — and only after checking that engine
+  offers the value. DXVK is refused unless the renderer payload reports
+  `renders=1`; esync is refused on Universal; high resolution is refused on
+  11.17; a Steam bottle's program stays locked. Universal's program is written
+  through the bundle's `wx-target` tool before the JSON is touched, so a refused
+  target leaves the old path in place. `bottles.json` is updated afterwards,
+  only as the cache the app expects.
 * Settings changes use optimistic concurrency: if `config.json` changed between
   the read and the write, the write is refused with "refresh and try again".
 * Archive extraction validates every member and every symlink target, so an
@@ -133,10 +144,11 @@ src/wehnix_cli/
 ├── contract.py    desktop rules: engine table, bottle types, env normalisation,
 │                  name sanitising, record shape, allowed settings
 ├── models.py      dataclasses only (Bottle, EngineArtifact, Game, Check, Snapshot)
-├── state.py       reads config/bottles/Info.plist/manifests; atomic writes;
-│                  prepare_state_dir; the app-running guard
-├── actions.py     reveal, launch, create, delete, set_setting, tail_log;
-│                  archive extraction with symlink and traversal validation
+├── state.py       reads config/bottles/launch configs/Info.plist/manifests;
+│                  atomic writes; prepare_state_dir; the app-running guard
+├── actions.py     reveal, launch, create, delete, set_setting, tail_log,
+│                  available_bottle_settings, set_bottle_setting; archive
+│                  extraction with symlink and traversal validation
 ├── doctor.py      the health checks behind the Doctor section and `doctor`
 ├── cli.py         argparse subcommands, JSON output, exit codes
 └── tui/
@@ -276,7 +288,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev]"
 
-pytest                                  # 65 tests, no network, no real data
+pytest                                  # 82 tests, no network, no real data
 WEHNIX_CLI_STATE_DIR="$PWD/tests/fixtures/state" WehniX
 python scripts/make_screenshot.py       # regenerate docs/cli.svg
 ```
@@ -291,10 +303,12 @@ never sends anything to the real Trash.
   dashboard are not here. That is the point of this client, not a gap to fill.
 * **Epic is read-only elsewhere.** Epic environments, logins and launches are
   the desktop app's job. `WehniX games` lists Steam libraries only.
-* **Bottle launch settings are read-only.** The launch program, renderer and
-  sync mode are written by the app into the engine's own config; the CLI shows
-  them (`s`) and leaves editing to the app rather than hand-editing an engine
-  contract it cannot verify.
+* **Bottle settings follow the engine, not every switch the app has.** `e`
+  changes the renderer, sync, Metal HUD, high resolution and launch program,
+  but only where that engine supports them: DXVK needs the Universal payload to
+  report `renders=1`, Universal has no esync, 11.17 has no high resolution, and
+  a Steam bottle always launches Steam. Window geometry and per-game overrides
+  stay in the app.
 * **Creation is local.** It needs an engine archive already in `Engine/`; it
   never downloads one, and it reports a failed `codesign` instead of hiding it.
 * **Beta.** The interface and the JSON shapes may still change between 0.x

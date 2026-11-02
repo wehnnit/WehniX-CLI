@@ -31,11 +31,13 @@ from textual.widgets import (
 from .. import __version__
 from ..actions import (
     ActionError,
+    available_bottle_settings,
     create_bottle,
     delete_bottle,
     open_desktop_app,
     open_path,
     reveal,
+    set_bottle_setting,
     set_setting,
     tail_log,
 )
@@ -483,19 +485,173 @@ class BottleDetailsModal(ModalScreen):
             ("App", str(bottle.app_path) if bottle.app_path else "—"),
             ("C: drive", str(bottle.c_drive) if bottle.c_drive else "not provisioned yet"),
             ("Registry", "bottles.json" if bottle.in_registry else "found on disk only"),
+            ("Settings from", bottle.settings_source or "unknown"),
         ]
         with Vertical(id="help"):
             yield Static(bottle.name, classes="title")
             for label, value in rows:
                 yield Static(f"[{ACCENT}]{label:<16}[/] [{MUTED}]{value}[/]")
             yield Static("")
+            if bottle.settings_error:
+                yield Static(f"[{WARN}]{bottle.settings_error}[/]")
             yield Static(
-                f"[{MUTED}]These are read from the bottle's own files. Change the "
-                f"launch program, renderer and sync in the WehniX window.[/]"
+                f"[{MUTED}]Press [{OK}]e[/] to change the renderer, sync, Metal HUD, "
+                f"high resolution or launch program. Only options this engine "
+                f"supports are offered.[/]"
             )
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+class BottleSettingsModal(ModalScreen):
+    """Edit one bottle, offering only what its engine supports.
+
+    Copied from wehnix_app.py :: update_bottle_app_settings: the desktop decides
+    from the engine, not from the registry, and a value the engine refuses is
+    never written. Unsupported fields stay visible but disabled, with the reason.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("ctrl+s", "save", "Save"),
+    ]
+
+    def __init__(self, bottle: Bottle, options: dict) -> None:
+        super().__init__()
+        self.bottle = bottle
+        self.options = options
+        self.current = options.get("current") or {}
+
+    def compose(self) -> ComposeResult:
+        options = self.options
+        current = self.current
+        renderers = [
+            (contract_label, name)
+            for name, detail in options["renderers"].items()
+            if detail["available"]
+            for contract_label in (name.upper(),)
+        ]
+        if not renderers:
+            renderers = [("DXMT", "dxmt")]
+        renderer_value = current.get("renderer")
+        if renderer_value not in {value for _label, value in renderers}:
+            renderer_value = renderers[0][1]
+        syncs = [(mode.upper(), mode) for mode in options["sync_modes"]]
+        sync_value = current.get("sync")
+        if sync_value not in {value for _label, value in syncs}:
+            sync_value = syncs[0][1]
+        locked = bool(options["program_locked"])
+        high_res_supported = bool(options["high_res"])
+
+        with Vertical(id="dialog", classes="settings-dialog"):
+            yield Static(f"Settings · {self.bottle.name}", classes="title")
+            yield Static(
+                f"{engine_label(self.bottle.engine)} · {options['runtime']} · "
+                f"written to this bottle's own engine files",
+                classes="hint",
+            )
+            with VerticalScroll(id="settings-form"):
+                yield Static(f"[{MUTED}]Renderer[/]")
+                yield Select(renderers, value=renderer_value, allow_blank=False, id="bs-renderer")
+                yield Static(f"[{MUTED}]Sync[/]")
+                yield Select(syncs, value=sync_value, allow_blank=False, id="bs-sync")
+                yield Static(f"[{MUTED}]Metal HUD[/]")
+                yield Select(
+                    [("On", "on"), ("Off", "off")],
+                    value="on" if current.get("metal_hud") else "off",
+                    allow_blank=False,
+                    id="bs-hud",
+                )
+                yield Static(
+                    f"[{MUTED}]High resolution[/]"
+                    + ("" if high_res_supported else f" [{MUTED}]— not on this engine[/]")
+                )
+                yield Select(
+                    [("On", "on"), ("Off", "off")],
+                    value="on" if current.get("high_res") else "off",
+                    allow_blank=False,
+                    id="bs-high",
+                    disabled=not high_res_supported,
+                )
+                yield Static(
+                    f"[{MUTED}]Program[/]"
+                    + (f" [{MUTED}]— locked[/]" if locked else "")
+                )
+                yield Input(
+                    value=str(current.get("program_path") or ""),
+                    placeholder="C:\\Games\\game.exe",
+                    id="bs-program",
+                    disabled=locked,
+                )
+                yield Static(f"[{MUTED}]Launch flags[/]")
+                yield Input(
+                    value=str(current.get("program_flags") or ""),
+                    placeholder="optional arguments",
+                    id="bs-flags",
+                    disabled=locked,
+                )
+                if locked:
+                    yield Static(f"[{MUTED}]{options['program_reason']}[/]", classes="hint")
+                if current.get("error"):
+                    yield Static(f"[{WARN}]{current['error']}[/]")
+            with Horizontal(id="dialog-buttons"):
+                yield Button("Cancel", id="bs-cancel")
+                yield Button("Save", id="bs-save", variant="primary")
+
+    def on_mount(self) -> None:
+        field = self.query_one("#bs-renderer", Select)
+        if field.disabled:
+            self.query_one("#bs-program", Input).focus()
+        else:
+            field.focus()
+
+    @on(Button.Pressed, "#bs-cancel")
+    def _cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_save(self) -> None:
+        self._save()
+
+    @on(Button.Pressed, "#bs-save")
+    def _save_pressed(self) -> None:
+        self._save()
+
+    def _changed(self, key: str, value: object) -> bool:
+        current = self.current.get(key)
+        if key in ("metal_hud", "high_res"):
+            return bool(value) != bool(current)
+        return str(value or "") != str(current or "")
+
+    def _save(self) -> None:
+        changes: dict[str, object] = {}
+        renderer = self.query_one("#bs-renderer", Select).value
+        if self._changed("renderer", renderer):
+            changes["renderer"] = renderer
+        sync = self.query_one("#bs-sync", Select).value
+        if self._changed("sync", sync):
+            changes["sync"] = sync
+        hud = self.query_one("#bs-hud", Select).value
+        if self._changed("metal_hud", hud == "on"):
+            changes["metal_hud"] = hud == "on"
+        if self.options["high_res"]:
+            high = self.query_one("#bs-high", Select).value
+            if self._changed("high_res", high == "on"):
+                changes["high_res"] = high == "on"
+        if not self.options["program_locked"]:
+            program = self.query_one("#bs-program", Input).value.strip()
+            if self._changed("program_path", program):
+                changes["program_path"] = program
+            flags = self.query_one("#bs-flags", Input).value.strip()
+            if self._changed("program_flags", flags):
+                changes["program_flags"] = flags
+        if not changes:
+            self.notify("Nothing changed", severity="warning")
+            return
+        self.dismiss(changes)
 
 
 class SettingEditModal(ModalScreen):
@@ -579,6 +735,7 @@ class HelpModal(ModalScreen):
             ("/", "filter bottles by name, engine or renderer"),
             ("l", "launch the selected bottle"),
             ("s", "bottle details"),
+            ("e", "edit that bottle's settings (engine-aware)"),
             ("n", "new bottle"),
             ("d", "delete a bottle (moves it to the Trash)"),
             ("t", "pause or follow the log"),
@@ -620,6 +777,7 @@ class WehniXCLI(App):
         Binding("n", "new_bottle", "New", show=True),
         Binding("d", "delete_bottle", "Delete", show=True),
         Binding("s", "bottle_details", "Details", show=True),
+        Binding("e", "edit_bottle", "Edit", show=True),
         Binding("slash", "search", "Filter", show=True),
         Binding("question_mark", "help", "Help", show=True),
         Binding("l", "launch", "Launch", show=False),
@@ -643,6 +801,7 @@ class WehniXCLI(App):
         self._query = ""
         self._checks = []
         self._app_running = False
+        self._settings_target: Bottle | None = None
         if state_dir is not None:
             import os
 
@@ -904,6 +1063,60 @@ class WehniXCLI(App):
             self.notify("No bottle selected", severity="warning")
             return
         self.push_screen(BottleDetailsModal(bottle))
+
+    def action_edit_bottle(self) -> None:
+        bottle = self._selected_bottle()
+        if bottle is None:
+            self.notify("No bottle selected", severity="warning")
+            return
+        if app_is_running():
+            self.notify("Quit WehniX first — it rewrites bottle settings.", severity="error")
+            return
+        self._open_settings(bottle)
+
+    @work(thread=True, exclusive=True)
+    def _open_settings(self, bottle: Bottle) -> None:
+        options = available_bottle_settings(bottle)
+        self._settings_target = bottle
+        self.call_from_thread(
+            self.push_screen,
+            BottleSettingsModal(bottle, options),
+            self._settings_confirmed,
+        )
+
+    def _settings_confirmed(self, changes) -> None:
+        if not changes:
+            return
+        bottle = self._settings_target
+        if bottle is None:
+            return
+        self._do_bottle_edit(bottle, changes)
+
+    @work(thread=True, exclusive=True)
+    def _do_bottle_edit(self, bottle: Bottle, changes: dict) -> None:
+        applied: list[str] = []
+        for key, value in changes.items():
+            try:
+                set_bottle_setting(bottle, key, value)
+            except ActionError as exc:
+                message = str(exc)
+                if applied:
+                    message += f" (already changed: {', '.join(applied)})"
+                self.call_from_thread(self.notify, message, severity="error")
+                break
+            except Exception as exc:  # never a traceback in the UI
+                self.call_from_thread(
+                    self.notify,
+                    f"Could not change {key}: {exc}",
+                    severity="error",
+                )
+                break
+            applied.append(key)
+        else:
+            self.call_from_thread(
+                self.notify, f"{bottle.name}: updated {', '.join(applied)}"
+            )
+        self.call_from_thread(self.refresh_all)
 
     def action_launch(self) -> None:
         bottle = self._selected_bottle()

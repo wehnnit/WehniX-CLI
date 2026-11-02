@@ -101,6 +101,11 @@ class Bottle:
     modified: float = 0.0
     size: int | None = None
     in_registry: bool = False
+    # Detected from the bundle itself, never from a record or a label.
+    runtime: str = ""
+    settings_source: str = ""  # app | record | default | error | none
+    dxvk_available: bool | None = None
+    settings_error: str = ""
 
     @property
     def kind(self) -> str:
