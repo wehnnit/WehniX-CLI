@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the interface to docs/cli.svg.
+"""Render the interface to docs/cli.svg and docs/cli.png.
 
     python3 scripts/make_screenshot.py
 
@@ -7,13 +7,18 @@ Builds a throwaway state folder from tests/fixtures/state so the picture is
 identical on any machine: same four bottles, two installed engines, plausible
 "last used" times. It lives in the system temporary folder and is removed
 afterwards, so the picture never touches the real WehniX data.
+
+The PNG is the image the README shows. Chrome renders it, because rsvg squeezes
+the spaces that separate a label from its value in the exported SVG.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -26,6 +31,8 @@ from wehnix_cli.tui.app import WehniXCLI  # noqa: E402
 
 FIXTURE = ROOT / "tests" / "fixtures" / "state"
 OUTPUT = ROOT / "docs" / "cli.svg"
+PNG = ROOT / "docs" / "cli.png"
+CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 
 # Sparse files: the CLI only ever stats an engine archive, so 4.2 GB costs no
 # disk and keeps the picture honest about what a real install looks like.
@@ -74,6 +81,39 @@ async def render() -> None:
             print(f"wrote {OUTPUT}")
     finally:
         shutil.rmtree(state.parent, ignore_errors=True)
+    render_png()
+
+
+def render_png() -> None:
+    """Turn the SVG into the PNG the README shows, at a readable size."""
+    if not CHROME.is_file():
+        print("Chrome not installed; docs/cli.png was not refreshed")
+        return
+    header = re.search(r'<svg[^>]*width="(\d+)"[^>]*height="(\d+)"', OUTPUT.read_text())
+    if header is None:
+        print("Could not read the SVG size; docs/cli.png was not refreshed")
+        return
+    width, height = (int(header.group(1)), int(header.group(2)))
+    completed = subprocess.run(
+        [
+            str(CHROME),
+            "--headless=new",
+            "--disable-gpu",
+            "--hide-scrollbars",
+            "--force-device-scale-factor=1.5",
+            f"--window-size={width},{height}",
+            f"--screenshot={PNG}",
+            OUTPUT.as_uri(),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    if completed.returncode != 0 or not PNG.is_file():
+        print(f"Chrome could not render the PNG: {completed.stderr.strip()[:200]}")
+        return
+    print(f"wrote {PNG}")
 
 
 if __name__ == "__main__":
